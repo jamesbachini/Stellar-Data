@@ -1,0 +1,7 @@
+{
+  "type": "module",
+  "dependencies": {
+    "@stellar/stellar-xdr-json": "^23.0.0",
+    "stellar-sdk": "^13.3.0"
+  }
+}
