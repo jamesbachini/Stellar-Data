@@ -174,6 +174,10 @@ impl Default for Config {
 }
 
 impl Config {
+    fn rpc_url() -> &'static str {
+        "https://archive-rpc.lightsail.network/"
+    }
+
     /// Generate the S3 URL for a given ledger sequence number
     fn generate_url(&self, ledger_seq: u32) -> String {
         let batch_start = ledger_seq;
@@ -215,16 +219,27 @@ fn fetch_and_decompress(url: &str, silent: bool) -> Result<Vec<u8>> {
     }
 
     let response = reqwest::blocking::get(url)
-        .context("Failed to download data from S3")?
-        .bytes()
+        .context("Failed to download data from S3")?;
+
+    // Check HTTP status code before processing
+    let status = response.status();
+    if !status.is_success() {
+        if status.as_u16() == 404 {
+            anyhow::bail!("Ledger data not found (HTTP 404). The ledger may not be available in the S3 bucket yet.");
+        } else {
+            anyhow::bail!("HTTP error {}: {}", status.as_u16(), status.canonical_reason().unwrap_or("Unknown error"));
+        }
+    }
+
+    let bytes = response.bytes()
         .context("Failed to read response bytes")?;
 
     if !silent {
-        println!("Downloaded {} bytes (compressed)", response.len());
+        println!("Downloaded {} bytes (compressed)", bytes.len());
     }
 
     // Decompress using zstd
-    let decompressed = zstd::decode_all(&response[..])
+    let decompressed = zstd::decode_all(&bytes[..])
         .context("Failed to decompress zstd data")?;
 
     if !silent {
@@ -238,6 +253,100 @@ fn fetch_and_decompress(url: &str, silent: bool) -> Result<Vec<u8>> {
 fn parse_xdr(data: &[u8]) -> Result<LedgerCloseMetaBatch> {
     LedgerCloseMetaBatch::from_xdr(data, Limits::none())
         .context("Failed to parse XDR data")
+}
+
+/// RPC response structures
+#[derive(serde::Deserialize)]
+struct RpcLedgerResponse {
+    ledgers: Vec<RpcLedger>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RpcLedger {
+    sequence: u32,
+    metadata_xdr: String,
+}
+
+/// Fetch ledger data from RPC when S3 doesn't have it yet
+fn fetch_from_rpc(ledger_seq: u32, silent: bool) -> Result<Vec<u8>> {
+    if !silent {
+        println!("Ledger not in S3, fetching from RPC archive...");
+    }
+
+    let client = reqwest::blocking::Client::new();
+    let rpc_request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getLedgers",
+        "params": {
+            "startLedger": ledger_seq,
+            "pagination": {
+                "limit": 1
+            }
+        }
+    });
+
+    let response = client
+        .post(Config::rpc_url())
+        .json(&rpc_request)
+        .send()
+        .context("Failed to call RPC")?;
+
+    if !response.status().is_success() {
+        anyhow::bail!("RPC returned error status: {}", response.status());
+    }
+
+    let json: serde_json::Value = response.json()
+        .context("Failed to parse RPC response")?;
+
+    if let Some(error) = json.get("error") {
+        anyhow::bail!("RPC error: {}", error);
+    }
+
+    let result = json.get("result")
+        .ok_or_else(|| anyhow::anyhow!("No result in RPC response"))?;
+
+    let ledgers = result.get("ledgers")
+        .and_then(|l| l.as_array())
+        .ok_or_else(|| anyhow::anyhow!("No ledgers in RPC response"))?;
+
+    if ledgers.is_empty() {
+        anyhow::bail!("Ledger {} not found in RPC", ledger_seq);
+    }
+
+    let ledger = &ledgers[0];
+    let metadata_xdr = ledger.get("metadataXdr")
+        .and_then(|m| m.as_str())
+        .ok_or_else(|| anyhow::anyhow!("No metadataXdr in RPC response"))?;
+
+    if !silent {
+        println!("Decoding base64 XDR from RPC...");
+    }
+
+    // Decode base64 to get the XDR bytes for LedgerCloseMeta
+    use stellar_xdr::curr::ReadXdr;
+    let ledger_close_meta = LedgerCloseMeta::from_xdr_base64(metadata_xdr, Limits::none())
+        .context("Failed to decode metadataXdr from RPC")?;
+
+    // Wrap it in a LedgerCloseMetaBatch (single ledger batch)
+    let batch = LedgerCloseMetaBatch {
+        start_sequence: ledger_seq,
+        end_sequence: ledger_seq,
+        ledger_close_metas: vec![ledger_close_meta].try_into()
+            .map_err(|_| anyhow::anyhow!("Failed to create VecM"))?,
+    };
+
+    // Serialize the batch to XDR bytes so it matches the S3 format
+    use stellar_xdr::curr::WriteXdr;
+    let xdr_bytes = batch.to_xdr(Limits::none())
+        .context("Failed to serialize batch to XDR")?;
+
+    if !silent {
+        println!("Fetched {} bytes from RPC", xdr_bytes.len());
+    }
+
+    Ok(xdr_bytes)
 }
 
 /// Extract account ID as string from MuxedAccount
@@ -507,12 +616,24 @@ fn main() -> Result<()> {
         // Generate URL for the ledger
         let url = config.generate_url(ledger_seq);
 
-        // Fetch and decompress the data
+        // Fetch and decompress the data (with RPC fallback on 404)
         let decompressed_data = match fetch_and_decompress(&url, silent) {
             Ok(data) => data,
             Err(e) => {
-                eprintln!("Error fetching ledger {}: {}", ledger_seq, e);
-                continue;
+                // Check if it's a 404 error, and if so, try RPC fallback
+                let error_msg = e.to_string();
+                if error_msg.contains("HTTP 404") {
+                    match fetch_from_rpc(ledger_seq, silent) {
+                        Ok(data) => data,
+                        Err(rpc_err) => {
+                            eprintln!("Error fetching ledger {} from RPC: {}", ledger_seq, rpc_err);
+                            continue;
+                        }
+                    }
+                } else {
+                    eprintln!("Error fetching ledger {}: {}", ledger_seq, e);
+                    continue;
+                }
             }
         };
 
@@ -597,7 +718,18 @@ fn main() -> Result<()> {
     } else {
         // Single ledger - use original output format
         let url = config.generate_url(ledger_range.start);
-        let decompressed_data = fetch_and_decompress(&url, false)?;
+        let decompressed_data = match fetch_and_decompress(&url, false) {
+            Ok(data) => data,
+            Err(e) => {
+                // Check if it's a 404 error, and if so, try RPC fallback
+                let error_msg = e.to_string();
+                if error_msg.contains("HTTP 404") {
+                    fetch_from_rpc(ledger_range.start, false)?
+                } else {
+                    return Err(e);
+                }
+            }
+        };
         let batch = parse_xdr(&decompressed_data)?;
 
         println!("\nLedger batch: {} to {}", batch.start_sequence, batch.end_sequence);

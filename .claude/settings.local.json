@@ -6,7 +6,11 @@
       "WebFetch(domain:docs.rs)",
       "Bash(cargo doc:*)",
       "Bash(./target/release/stellar-data:*)",
-      "Bash(cargo search:*)"
+      "Bash(cargo search:*)",
+      "Bash(curl:*)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "Bash(aws s3 ls:*)"
     ],
     "deny": [],
     "ask": []

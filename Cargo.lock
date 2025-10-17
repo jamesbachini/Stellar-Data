@@ -1420,6 +1420,7 @@ version = "24.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ceec163a64a9ed03359dab3b73ca556251020edc0103bae7073a38eb1708ab5"
 dependencies = [
+ "base64",
  "cfg_eval",
  "crate-git-revision",
  "escape-bytes",
