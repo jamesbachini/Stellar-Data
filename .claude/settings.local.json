@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo init:*)",
+      "Bash(cargo build:*)",
+      "WebFetch(domain:docs.rs)",
+      "Bash(cargo doc:*)",
+      "Bash(./target/release/stellar-data:*)",
+      "Bash(cargo search:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

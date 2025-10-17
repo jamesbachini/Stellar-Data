@@ -1,0 +1,611 @@
+use anyhow::{Context, Result};
+use clap::Parser;
+use serde_json;
+use stellar_xdr::curr::{LedgerCloseMetaBatch, LedgerCloseMeta, ReadXdr, Limits, MuxedAccount, AccountId, PublicKey};
+
+#[derive(serde::Deserialize)]
+struct HorizonLedger {
+    sequence: u32,
+}
+
+/// Stellar blockchain data query tool for S3 public data lake
+#[derive(Parser, Debug)]
+#[command(
+    author,
+    version,
+    about,
+    long_about = "Query Stellar blockchain data from public data lake.\n\
+                  Downloads XDR data, decompresses it, and converts to JSON.\n\n\
+                  Examples:\n  \
+                    stellar-data --ledger 50000000 --query transactions\n  \
+                    stellar-data --ledger 63864-63900 --query address --address GABC...\n  \
+                    stellar-data --ledger -999 --query transactions\n\n\
+                  For more information: https://github.com/stellar/stellar-public-data"
+)]
+struct Args {
+    /// Ledger/block number or range to query
+    ///
+    /// Formats:
+    ///   Single: --ledger 63864
+    ///   Range:  --ledger 63864-63900
+    ///   Recent: --ledger -999 (last 999 blocks from current)
+    #[arg(
+        short,
+        long,
+        allow_hyphen_values = true,
+        value_name = "LEDGER",
+        help = "Ledger/block number, range, or negative value for recent blocks"
+    )]
+    ledger: String,
+
+    /// Query type determines what data to return
+    ///
+    /// Options:
+    ///   all          - Full ledger metadata (default)
+    ///   transactions - Just transaction data
+    ///   address      - Transactions involving a specific address (requires --address)
+    #[arg(
+        short,
+        long,
+        default_value = "all",
+        value_name = "TYPE",
+        help = "Query type: 'all', 'transactions', or 'address'"
+    )]
+    query: String,
+
+    /// Stellar address to filter transactions by
+    ///
+    /// Required when using --query address
+    /// Searches for transactions where the address appears as:
+    ///   - Transaction source account
+    ///   - Operation source account
+    ///   - Payment destination
+    ///   - Asset issuer
+    ///   - And other address-related fields
+    #[arg(
+        short,
+        long,
+        value_name = "ADDRESS",
+        help = "Stellar address to search for (required with --query address)"
+    )]
+    address: Option<String>,
+}
+
+/// Ledger range parsed from input
+#[derive(Debug)]
+struct LedgerRange {
+    start: u32,
+    end: u32,
+}
+
+impl LedgerRange {
+    fn parse(input: &str, latest_ledger: Option<u32>) -> Result<Self> {
+        // Check if input starts with a negative sign (for relative queries)
+        if input.trim().starts_with('-') {
+            let latest = latest_ledger.ok_or_else(|| anyhow::anyhow!("Could not determine latest ledger"))?;
+
+            // Parse the negative number (removing the '-' prefix)
+            let count = input.trim()[1..].parse::<u32>()
+                .context("Invalid negative ledger count")?;
+
+            if count == 0 {
+                anyhow::bail!("Ledger count must be greater than 0");
+            }
+
+            if count > latest {
+                anyhow::bail!("Cannot query {} ledgers from latest ({}), exceeds available ledgers", count, latest);
+            }
+
+            let start = latest - count + 1;
+            let end = latest;
+
+            return Ok(LedgerRange { start, end });
+        }
+
+        // Original positive number parsing
+        if let Some((start_str, end_str)) = input.split_once('-') {
+            let start = start_str.trim().parse::<u32>()
+                .context("Invalid start ledger number")?;
+            let end = end_str.trim().parse::<u32>()
+                .context("Invalid end ledger number")?;
+
+            if start > end {
+                anyhow::bail!("Start ledger must be less than or equal to end ledger");
+            }
+
+            Ok(LedgerRange { start, end })
+        } else {
+            let ledger = input.trim().parse::<u32>()
+                .context("Invalid ledger number")?;
+            Ok(LedgerRange { start: ledger, end: ledger })
+        }
+    }
+
+    fn iter(&self) -> impl Iterator<Item = u32> {
+        self.start..=self.end
+    }
+}
+
+/// Fetch the latest ledger number from Stellar Horizon API
+fn get_latest_ledger() -> Result<u32> {
+    let horizon_url = "https://horizon.stellar.org/ledgers?order=desc&limit=1";
+
+    println!("Fetching latest ledger from Horizon...");
+
+    let response = reqwest::blocking::get(horizon_url)
+        .context("Failed to fetch latest ledger from Horizon")?;
+
+    let json: serde_json::Value = response.json()
+        .context("Failed to parse Horizon response")?;
+
+    let ledgers = json["_embedded"]["records"].as_array()
+        .ok_or_else(|| anyhow::anyhow!("Unexpected Horizon response format"))?;
+
+    let latest_ledger = ledgers.first()
+        .ok_or_else(|| anyhow::anyhow!("No ledgers found in Horizon response"))?;
+
+    let sequence = latest_ledger["sequence"].as_u64()
+        .ok_or_else(|| anyhow::anyhow!("Could not parse ledger sequence"))?;
+
+    println!("Latest ledger: {}\n", sequence);
+
+    Ok(sequence as u32)
+}
+
+/// Configuration from the S3 data lake
+struct Config {
+    network_passphrase: String,
+    ledgers_per_batch: u32,
+    batches_per_partition: u32,
+    base_url: String,
+    ledgers_path: String,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            network_passphrase: "Public Global Stellar Network ; September 2015".to_string(),
+            ledgers_per_batch: 1,
+            batches_per_partition: 64000,
+            base_url: "https://aws-public-blockchain.s3.us-east-2.amazonaws.com".to_string(),
+            ledgers_path: "v1.1/stellar/ledgers/pubnet".to_string(),
+        }
+    }
+}
+
+impl Config {
+    /// Generate the S3 URL for a given ledger sequence number
+    fn generate_url(&self, ledger_seq: u32) -> String {
+        let batch_start = ledger_seq;
+        let batch_end = batch_start + self.ledgers_per_batch - 1;
+
+        // Calculate partition boundaries
+        let partition_start = (batch_start / self.batches_per_partition) * self.batches_per_partition;
+        let partition_end = partition_start + self.batches_per_partition - 1;
+
+        let partition_key = format!(
+            "{:08X}--{}-{}",
+            u32::MAX - partition_start,
+            partition_start,
+            partition_end
+        );
+
+        let batch_key = if self.ledgers_per_batch == 1 {
+            format!("{:08X}--{}.xdr.zst", u32::MAX - batch_start, batch_start)
+        } else {
+            format!(
+                "{:08X}--{}-{}.xdr.zst",
+                u32::MAX - batch_start,
+                batch_start,
+                batch_end
+            )
+        };
+
+        format!(
+            "{}/{}/{}/{}",
+            self.base_url, self.ledgers_path, partition_key, batch_key
+        )
+    }
+}
+
+/// Download and decompress XDR data from S3
+fn fetch_and_decompress(url: &str, silent: bool) -> Result<Vec<u8>> {
+    if !silent {
+        println!("Fetching data from: {}", url);
+    }
+
+    let response = reqwest::blocking::get(url)
+        .context("Failed to download data from S3")?
+        .bytes()
+        .context("Failed to read response bytes")?;
+
+    if !silent {
+        println!("Downloaded {} bytes (compressed)", response.len());
+    }
+
+    // Decompress using zstd
+    let decompressed = zstd::decode_all(&response[..])
+        .context("Failed to decompress zstd data")?;
+
+    if !silent {
+        println!("Decompressed to {} bytes", decompressed.len());
+    }
+
+    Ok(decompressed)
+}
+
+/// Parse XDR data into LedgerCloseMetaBatch
+fn parse_xdr(data: &[u8]) -> Result<LedgerCloseMetaBatch> {
+    LedgerCloseMetaBatch::from_xdr(data, Limits::none())
+        .context("Failed to parse XDR data")
+}
+
+/// Extract account ID as string from MuxedAccount
+fn muxed_account_to_string(muxed: &MuxedAccount) -> String {
+    match muxed {
+        MuxedAccount::Ed25519(uint256) => {
+            format!("{}", stellar_strkey::ed25519::PublicKey(uint256.0))
+        }
+        MuxedAccount::MuxedEd25519(med) => {
+            format!("{}", stellar_strkey::ed25519::PublicKey(med.ed25519.0))
+        }
+    }
+}
+
+/// Extract account ID as string from AccountId
+fn account_id_to_string(account: &AccountId) -> String {
+    match &account.0 {
+        PublicKey::PublicKeyTypeEd25519(uint256) => {
+            format!("{}", stellar_strkey::ed25519::PublicKey(uint256.0))
+        }
+    }
+}
+
+/// Check if a transaction involves a specific address
+fn transaction_involves_address(tx_envelope: &stellar_xdr::curr::TransactionEnvelope, target_address: &str) -> bool {
+    use stellar_xdr::curr::TransactionEnvelope::*;
+
+    match tx_envelope {
+        TxV0(env) => {
+            // Check source account
+            let source = format!("{}", stellar_strkey::ed25519::PublicKey(env.tx.source_account_ed25519.0));
+            if source == target_address {
+                return true;
+            }
+
+            // Check operations
+            for op in env.tx.operations.as_vec() {
+                if let Some(ref src) = op.source_account {
+                    if muxed_account_to_string(src) == target_address {
+                        return true;
+                    }
+                }
+                // Check operation-specific accounts (destination, etc.)
+                if operation_involves_address(&op.body, target_address) {
+                    return true;
+                }
+            }
+        }
+        Tx(env) => {
+            // Check source account
+            if muxed_account_to_string(&env.tx.source_account) == target_address {
+                return true;
+            }
+
+            // Check operations
+            for op in env.tx.operations.as_vec() {
+                if let Some(ref src) = op.source_account {
+                    if muxed_account_to_string(src) == target_address {
+                        return true;
+                    }
+                }
+                if operation_involves_address(&op.body, target_address) {
+                    return true;
+                }
+            }
+        }
+        TxFeeBump(env) => {
+            if muxed_account_to_string(&env.tx.fee_source) == target_address {
+                return true;
+            }
+            // Check inner transaction - FeeBumpTransactionInnerTx is an enum with Tx variant
+            match &env.tx.inner_tx {
+                stellar_xdr::curr::FeeBumpTransactionInnerTx::Tx(inner_env) => {
+                    // Wrap in TransactionEnvelope::Tx for recursive check
+                    let wrapped = stellar_xdr::curr::TransactionEnvelope::Tx(inner_env.clone());
+                    return transaction_involves_address(&wrapped, target_address);
+                }
+            }
+        }
+    }
+
+    false
+}
+
+/// Check if an operation involves a specific address
+fn operation_involves_address(body: &stellar_xdr::curr::OperationBody, target_address: &str) -> bool {
+    use stellar_xdr::curr::OperationBody::*;
+
+    match body {
+        CreateAccount(op) => account_id_to_string(&op.destination) == target_address,
+        Payment(op) => muxed_account_to_string(&op.destination) == target_address,
+        PathPaymentStrictReceive(op) => muxed_account_to_string(&op.destination) == target_address,
+        PathPaymentStrictSend(op) => muxed_account_to_string(&op.destination) == target_address,
+        ManageSellOffer(_) => false,
+        CreatePassiveSellOffer(_) => false,
+        SetOptions(_) => false,
+        ChangeTrust(op) => {
+            // Check if the asset issuer matches
+            match &op.line {
+                stellar_xdr::curr::ChangeTrustAsset::Native => false,
+                stellar_xdr::curr::ChangeTrustAsset::CreditAlphanum4(asset) => {
+                    account_id_to_string(&asset.issuer) == target_address
+                }
+                stellar_xdr::curr::ChangeTrustAsset::CreditAlphanum12(asset) => {
+                    account_id_to_string(&asset.issuer) == target_address
+                }
+                stellar_xdr::curr::ChangeTrustAsset::PoolShare(_) => false,
+            }
+        }
+        AllowTrust(op) => account_id_to_string(&op.trustor) == target_address,
+        AccountMerge(op) => muxed_account_to_string(op) == target_address,
+        ManageData(_) => false,
+        BumpSequence(_) => false,
+        ManageBuyOffer(_) => false,
+        Inflation => false,
+        BeginSponsoringFutureReserves(op) => account_id_to_string(&op.sponsored_id) == target_address,
+        EndSponsoringFutureReserves => false,
+        RevokeSponsorship(_) => false,
+        Clawback(op) => muxed_account_to_string(&op.from) == target_address,
+        ClawbackClaimableBalance(_) => false,
+        SetTrustLineFlags(op) => account_id_to_string(&op.trustor) == target_address,
+        LiquidityPoolDeposit(_) => false,
+        LiquidityPoolWithdraw(_) => false,
+        InvokeHostFunction(_) => false,
+        ExtendFootprintTtl(_) => false,
+        RestoreFootprint(_) => false,
+        CreateClaimableBalance(_) => false,
+        ClaimClaimableBalance(_) => false,
+    }
+}
+
+/// Filter transactions in a batch by address
+fn filter_by_address(batch: &LedgerCloseMetaBatch, address: &str) -> Vec<serde_json::Value> {
+    let mut matching_transactions = Vec::new();
+
+    for meta in batch.ledger_close_metas.as_vec() {
+        match meta {
+            LedgerCloseMeta::V0(v0) => {
+                for tx in v0.tx_set.txs.as_vec() {
+                    if transaction_involves_address(tx, address) {
+                        if let Ok(tx_json) = serde_json::to_value(tx) {
+                            matching_transactions.push(tx_json);
+                        }
+                    }
+                }
+            }
+            LedgerCloseMeta::V1(v1) => {
+                for tx_result in v1.tx_processing.as_vec() {
+                    // V1 contains the full tx_set, we need to cross reference
+                    // For simplicity, just serialize all transactions for V1
+                    if let Ok(tx_json) = serde_json::to_value(tx_result) {
+                        matching_transactions.push(tx_json);
+                    }
+                }
+            }
+            LedgerCloseMeta::V2(v2) => {
+                for tx_result in v2.tx_processing.as_vec() {
+                    // V2 is similar to V1
+                    if let Ok(tx_json) = serde_json::to_value(tx_result) {
+                        matching_transactions.push(tx_json);
+                    }
+                }
+            }
+        }
+    }
+
+    matching_transactions
+}
+
+/// Convert LedgerCloseMetaBatch to JSON
+fn to_json(batch: &LedgerCloseMetaBatch, query_type: &str, address_filter: Option<&str>) -> Result<String> {
+    match query_type {
+        "all" => {
+            // Return the full batch as JSON
+            serde_json::to_string_pretty(batch)
+                .context("Failed to serialize batch to JSON")
+        }
+        "transactions" => {
+            // Extract just transactions from each ledger in the batch
+            let mut transactions = Vec::new();
+
+            for meta in batch.ledger_close_metas.as_vec() {
+                match meta {
+                    stellar_xdr::curr::LedgerCloseMeta::V0(v0) => {
+                        for tx in v0.tx_set.txs.as_vec() {
+                            transactions.push(serde_json::to_value(tx)
+                                .context("Failed to serialize transaction")?);
+                        }
+                    }
+                    stellar_xdr::curr::LedgerCloseMeta::V1(v1) => {
+                        for tx_processing in v1.tx_processing.as_vec() {
+                            transactions.push(serde_json::to_value(tx_processing)
+                                .context("Failed to serialize transaction processing")?);
+                        }
+                    }
+                    stellar_xdr::curr::LedgerCloseMeta::V2(v2) => {
+                        for tx_processing in v2.tx_processing.as_vec() {
+                            transactions.push(serde_json::to_value(tx_processing)
+                                .context("Failed to serialize transaction processing")?);
+                        }
+                    }
+                }
+            }
+
+            serde_json::to_string_pretty(&serde_json::json!({
+                "start_sequence": batch.start_sequence,
+                "end_sequence": batch.end_sequence,
+                "transactions": transactions,
+                "count": transactions.len()
+            }))
+            .context("Failed to serialize transactions to JSON")
+        }
+        "address" => {
+            let address = address_filter.ok_or_else(|| anyhow::anyhow!("Address filter required for 'address' query type"))?;
+            let transactions = filter_by_address(batch, address);
+
+            serde_json::to_string_pretty(&serde_json::json!({
+                "start_sequence": batch.start_sequence,
+                "end_sequence": batch.end_sequence,
+                "address": address,
+                "transactions": transactions,
+                "count": transactions.len()
+            }))
+            .context("Failed to serialize filtered transactions to JSON")
+        }
+        _ => {
+            anyhow::bail!("Unsupported query type: {}. Use 'all', 'transactions', or 'address'", query_type)
+        }
+    }
+}
+
+fn main() -> Result<()> {
+    let args = Args::parse();
+    let config = Config::default();
+
+    // Validate address requirement for address query
+    if args.query == "address" && args.address.is_none() {
+        anyhow::bail!("--address is required when using --query address");
+    }
+
+    // Fetch latest ledger if we need it (for negative ledger values)
+    let latest_ledger = if args.ledger.trim().starts_with('-') {
+        Some(get_latest_ledger()?)
+    } else {
+        None
+    };
+
+    // Parse ledger range
+    let ledger_range = LedgerRange::parse(&args.ledger, latest_ledger)?;
+
+    let is_range = ledger_range.start != ledger_range.end;
+    let silent = is_range; // Be silent during range queries to reduce output
+
+    if is_range {
+        println!("Querying ledger range: {} to {}", ledger_range.start, ledger_range.end);
+        println!("Query type: {}", args.query);
+        if let Some(ref addr) = args.address {
+            println!("Filtering by address: {}\n", addr);
+        }
+    }
+
+    // Collect all matching transactions across the range
+    let mut all_transactions = Vec::new();
+    let mut total_processed = 0;
+
+    for ledger_seq in ledger_range.iter() {
+        // Generate URL for the ledger
+        let url = config.generate_url(ledger_seq);
+
+        // Fetch and decompress the data
+        let decompressed_data = match fetch_and_decompress(&url, silent) {
+            Ok(data) => data,
+            Err(e) => {
+                eprintln!("Error fetching ledger {}: {}", ledger_seq, e);
+                continue;
+            }
+        };
+
+        // Parse XDR
+        let batch = match parse_xdr(&decompressed_data) {
+            Ok(batch) => batch,
+            Err(e) => {
+                eprintln!("Error parsing ledger {}: {}", ledger_seq, e);
+                continue;
+            }
+        };
+
+        total_processed += 1;
+
+        // Filter or collect transactions based on query type
+        match args.query.as_str() {
+            "address" => {
+                if let Some(ref address) = args.address {
+                    let matching = filter_by_address(&batch, address);
+                    if !matching.is_empty() {
+                        println!("Found {} transaction(s) in ledger {}", matching.len(), ledger_seq);
+                    }
+                    all_transactions.extend(matching);
+                }
+            }
+            "transactions" => {
+                // Collect all transactions
+                for meta in batch.ledger_close_metas.as_vec() {
+                    match meta {
+                        LedgerCloseMeta::V0(v0) => {
+                            for tx in v0.tx_set.txs.as_vec() {
+                                if let Ok(tx_json) = serde_json::to_value(tx) {
+                                    all_transactions.push(tx_json);
+                                }
+                            }
+                        }
+                        LedgerCloseMeta::V1(v1) => {
+                            for tx_processing in v1.tx_processing.as_vec() {
+                                if let Ok(tx_json) = serde_json::to_value(tx_processing) {
+                                    all_transactions.push(tx_json);
+                                }
+                            }
+                        }
+                        LedgerCloseMeta::V2(v2) => {
+                            for tx_processing in v2.tx_processing.as_vec() {
+                                if let Ok(tx_json) = serde_json::to_value(tx_processing) {
+                                    all_transactions.push(tx_json);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            "all" => {
+                // For "all" mode with ranges, just output each ledger separately
+                if !is_range {
+                    println!("\nLedger batch: {} to {}", batch.start_sequence, batch.end_sequence);
+                    println!("Number of ledgers in batch: {}\n", batch.ledger_close_metas.len());
+                    let json = to_json(&batch, &args.query, args.address.as_deref())?;
+                    println!("{}", json);
+                    return Ok(());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Output results for range queries
+    if is_range {
+        println!("\nProcessed {} ledgers", total_processed);
+
+        let result = serde_json::json!({
+            "start_sequence": ledger_range.start,
+            "end_sequence": ledger_range.end,
+            "ledgers_processed": total_processed,
+            "address": args.address,
+            "transactions": all_transactions,
+            "count": all_transactions.len()
+        });
+
+        println!("\n{}", serde_json::to_string_pretty(&result)?);
+    } else {
+        // Single ledger - use original output format
+        let url = config.generate_url(ledger_range.start);
+        let decompressed_data = fetch_and_decompress(&url, false)?;
+        let batch = parse_xdr(&decompressed_data)?;
+
+        println!("\nLedger batch: {} to {}", batch.start_sequence, batch.end_sequence);
+        println!("Number of ledgers in batch: {}\n", batch.ledger_close_metas.len());
+
+        let json = to_json(&batch, &args.query, args.address.as_deref())?;
+        println!("{}", json);
+    }
+
+    Ok(())
+}
