@@ -17,9 +17,12 @@ struct HorizonLedger {
     long_about = "Query Stellar blockchain data from public data lake.\n\
                   Downloads XDR data, decompresses it, and converts to JSON.\n\n\
                   Examples:\n  \
-                    stellar-data --ledger 50000000 --query transactions\n  \
-                    stellar-data --ledger 63864-63900 --query address --address GABC...\n  \
-                    stellar-data --ledger -999 --query transactions\n\n\
+                    stellar-data --ledger 50000000 --query transactions\n\
+                    stellar-data --ledger 63864-63900 --query address --address GABC...\n\
+                    stellar-data --ledger -999 --query transactions\n\
+                    stellar-data --ledger 59424051-59424060 --query contract --address CAB1...\n\
+                    stellar-data --ledger 59424051-59424060 --query function --name work\n\n\
+                    
                   For more information: https://github.com/stellar/stellar-public-data"
 )]
 struct Args {
@@ -44,31 +47,46 @@ struct Args {
     ///   all          - Full ledger metadata (default)
     ///   transactions - Just transaction data
     ///   address      - Transactions involving a specific address (requires --address)
+    ///   contract     - Transactions involving a specific contract (requires --address)
+    ///   function     - Transactions calling a specific function (requires --name)
     #[arg(
         short,
         long,
         default_value = "all",
         value_name = "TYPE",
-        help = "Query type: 'all', 'transactions', or 'address'"
+        help = "Query type: 'all', 'transactions', 'address', 'contract', or 'function'"
     )]
     query: String,
 
     /// Stellar address to filter transactions by
     ///
-    /// Required when using --query address
-    /// Searches for transactions where the address appears as:
+    /// Required when using --query address or --query contract
+    /// For 'address': Searches for transactions where the address appears as:
     ///   - Transaction source account
     ///   - Operation source account
     ///   - Payment destination
     ///   - Asset issuer
     ///   - And other address-related fields
+    /// For 'contract': Searches for transactions that invoke the specified contract
     #[arg(
         short,
         long,
         value_name = "ADDRESS",
-        help = "Stellar address to search for (required with --query address)"
+        help = "Stellar address or contract address to search for"
     )]
     address: Option<String>,
+
+    /// Function name to filter transactions by
+    ///
+    /// Required when using --query function
+    /// Searches for transactions that call the specified contract function name
+    #[arg(
+        short = 'n',
+        long,
+        value_name = "NAME",
+        help = "Function name to search for (required with --query function)"
+    )]
+    name: Option<String>,
 }
 
 /// Ledger range parsed from input
@@ -478,6 +496,84 @@ fn operation_involves_address(body: &stellar_xdr::curr::OperationBody, target_ad
     }
 }
 
+/// Check if a transaction involves a specific contract address
+fn transaction_involves_contract(tx_envelope: &stellar_xdr::curr::TransactionEnvelope, contract_address: &str) -> bool {
+    use stellar_xdr::curr::TransactionEnvelope::*;
+
+    let operations = match tx_envelope {
+        TxV0(env) => env.tx.operations.as_vec(),
+        Tx(env) => env.tx.operations.as_vec(),
+        TxFeeBump(env) => {
+            match &env.tx.inner_tx {
+                stellar_xdr::curr::FeeBumpTransactionInnerTx::Tx(inner_env) => {
+                    inner_env.tx.operations.as_vec()
+                }
+            }
+        }
+    };
+
+    for op in operations {
+        if let stellar_xdr::curr::OperationBody::InvokeHostFunction(invoke_op) = &op.body {
+            // Check auth credentials for contract addresses
+            for auth in invoke_op.auth.as_vec() {
+                // Check if the root_invocation contains the contract address
+                let auth_str = format!("{:?}", auth.root_invocation);
+                if auth_str.contains(contract_address) {
+                    return true;
+                }
+            }
+
+            // Check host function itself - convert to string and search
+            let host_fn_str = format!("{:?}", invoke_op.host_function);
+            if host_fn_str.contains(contract_address) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+/// Check if a transaction calls a specific function name
+fn transaction_calls_function(tx_envelope: &stellar_xdr::curr::TransactionEnvelope, function_name: &str) -> bool {
+    use stellar_xdr::curr::TransactionEnvelope::*;
+
+    let operations = match tx_envelope {
+        TxV0(env) => env.tx.operations.as_vec(),
+        Tx(env) => env.tx.operations.as_vec(),
+        TxFeeBump(env) => {
+            match &env.tx.inner_tx {
+                stellar_xdr::curr::FeeBumpTransactionInnerTx::Tx(inner_env) => {
+                    inner_env.tx.operations.as_vec()
+                }
+            }
+        }
+    };
+
+    for op in operations {
+        if let stellar_xdr::curr::OperationBody::InvokeHostFunction(invoke_op) = &op.body {
+            // Check auth credentials for function names
+            for auth in invoke_op.auth.as_vec() {
+                let auth_str = format!("{:?}", auth.root_invocation);
+                // Look for function name in the debug output
+                if auth_str.contains(&format!("\"{}\"", function_name)) ||
+                   auth_str.contains(&format!("function_name: Symbol(StringM({})", function_name)) {
+                    return true;
+                }
+            }
+
+            // Check host function by converting to debug string
+            let host_fn_str = format!("{:?}", invoke_op.host_function);
+            if host_fn_str.contains(&format!("\"{}\"", function_name)) ||
+               host_fn_str.contains(&format!("Symbol(StringM({})", function_name)) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
 /// Filter transactions in a batch by address
 fn filter_by_address(batch: &LedgerCloseMetaBatch, address: &str) -> Vec<serde_json::Value> {
     let mut matching_transactions = Vec::new();
@@ -516,8 +612,78 @@ fn filter_by_address(batch: &LedgerCloseMetaBatch, address: &str) -> Vec<serde_j
     matching_transactions
 }
 
+/// Filter transactions in a batch by contract address
+fn filter_by_contract(batch: &LedgerCloseMetaBatch, contract_address: &str) -> Vec<serde_json::Value> {
+    let mut matching_transactions = Vec::new();
+
+    for meta in batch.ledger_close_metas.as_vec() {
+        match meta {
+            LedgerCloseMeta::V0(v0) => {
+                for tx in v0.tx_set.txs.as_vec() {
+                    if transaction_involves_contract(tx, contract_address) {
+                        if let Ok(tx_json) = serde_json::to_value(tx) {
+                            matching_transactions.push(tx_json);
+                        }
+                    }
+                }
+            }
+            LedgerCloseMeta::V1(v1) => {
+                for tx_result in v1.tx_processing.as_vec() {
+                    if let Ok(tx_json) = serde_json::to_value(tx_result) {
+                        matching_transactions.push(tx_json);
+                    }
+                }
+            }
+            LedgerCloseMeta::V2(v2) => {
+                for tx_result in v2.tx_processing.as_vec() {
+                    if let Ok(tx_json) = serde_json::to_value(tx_result) {
+                        matching_transactions.push(tx_json);
+                    }
+                }
+            }
+        }
+    }
+
+    matching_transactions
+}
+
+/// Filter transactions in a batch by function name
+fn filter_by_function(batch: &LedgerCloseMetaBatch, function_name: &str) -> Vec<serde_json::Value> {
+    let mut matching_transactions = Vec::new();
+
+    for meta in batch.ledger_close_metas.as_vec() {
+        match meta {
+            LedgerCloseMeta::V0(v0) => {
+                for tx in v0.tx_set.txs.as_vec() {
+                    if transaction_calls_function(tx, function_name) {
+                        if let Ok(tx_json) = serde_json::to_value(tx) {
+                            matching_transactions.push(tx_json);
+                        }
+                    }
+                }
+            }
+            LedgerCloseMeta::V1(v1) => {
+                for tx_result in v1.tx_processing.as_vec() {
+                    if let Ok(tx_json) = serde_json::to_value(tx_result) {
+                        matching_transactions.push(tx_json);
+                    }
+                }
+            }
+            LedgerCloseMeta::V2(v2) => {
+                for tx_result in v2.tx_processing.as_vec() {
+                    if let Ok(tx_json) = serde_json::to_value(tx_result) {
+                        matching_transactions.push(tx_json);
+                    }
+                }
+            }
+        }
+    }
+
+    matching_transactions
+}
+
 /// Convert LedgerCloseMetaBatch to JSON
-fn to_json(batch: &LedgerCloseMetaBatch, query_type: &str, address_filter: Option<&str>) -> Result<String> {
+fn to_json(batch: &LedgerCloseMetaBatch, query_type: &str, address_filter: Option<&str>, name_filter: Option<&str>) -> Result<String> {
     match query_type {
         "all" => {
             // Return the full batch as JSON
@@ -572,8 +738,34 @@ fn to_json(batch: &LedgerCloseMetaBatch, query_type: &str, address_filter: Optio
             }))
             .context("Failed to serialize filtered transactions to JSON")
         }
+        "contract" => {
+            let contract = address_filter.ok_or_else(|| anyhow::anyhow!("Contract address (--address) required for 'contract' query type"))?;
+            let transactions = filter_by_contract(batch, contract);
+
+            serde_json::to_string_pretty(&serde_json::json!({
+                "start_sequence": batch.start_sequence,
+                "end_sequence": batch.end_sequence,
+                "contract": contract,
+                "transactions": transactions,
+                "count": transactions.len()
+            }))
+            .context("Failed to serialize filtered transactions to JSON")
+        }
+        "function" => {
+            let function_name = name_filter.ok_or_else(|| anyhow::anyhow!("Function name (--name) required for 'function' query type"))?;
+            let transactions = filter_by_function(batch, function_name);
+
+            serde_json::to_string_pretty(&serde_json::json!({
+                "start_sequence": batch.start_sequence,
+                "end_sequence": batch.end_sequence,
+                "function": function_name,
+                "transactions": transactions,
+                "count": transactions.len()
+            }))
+            .context("Failed to serialize filtered transactions to JSON")
+        }
         _ => {
-            anyhow::bail!("Unsupported query type: {}. Use 'all', 'transactions', or 'address'", query_type)
+            anyhow::bail!("Unsupported query type: {}. Use 'all', 'transactions', 'address', 'contract', or 'function'", query_type)
         }
     }
 }
@@ -582,9 +774,15 @@ fn main() -> Result<()> {
     let args = Args::parse();
     let config = Config::default();
 
-    // Validate address requirement for address query
+    // Validate address requirement for address and contract queries
     if args.query == "address" && args.address.is_none() {
         anyhow::bail!("--address is required when using --query address");
+    }
+    if args.query == "contract" && args.address.is_none() {
+        anyhow::bail!("--address is required when using --query contract");
+    }
+    if args.query == "function" && args.name.is_none() {
+        anyhow::bail!("--name is required when using --query function");
     }
 
     // Fetch latest ledger if we need it (for negative ledger values)
@@ -604,7 +802,14 @@ fn main() -> Result<()> {
         println!("Querying ledger range: {} to {}", ledger_range.start, ledger_range.end);
         println!("Query type: {}", args.query);
         if let Some(ref addr) = args.address {
-            println!("Filtering by address: {}\n", addr);
+            if args.query == "address" {
+                println!("Filtering by address: {}\n", addr);
+            } else if args.query == "contract" {
+                println!("Filtering by contract: {}\n", addr);
+            }
+        }
+        if let Some(ref name) = args.name {
+            println!("Filtering by function: {}\n", name);
         }
     }
 
@@ -653,7 +858,25 @@ fn main() -> Result<()> {
             "address" => {
                 if let Some(ref address) = args.address {
                     let matching = filter_by_address(&batch, address);
-                    if !matching.is_empty() {
+                    if !matching.is_empty() && !silent {
+                        println!("Found {} transaction(s) in ledger {}", matching.len(), ledger_seq);
+                    }
+                    all_transactions.extend(matching);
+                }
+            }
+            "contract" => {
+                if let Some(ref contract) = args.address {
+                    let matching = filter_by_contract(&batch, contract);
+                    if !matching.is_empty() && !silent {
+                        println!("Found {} transaction(s) in ledger {}", matching.len(), ledger_seq);
+                    }
+                    all_transactions.extend(matching);
+                }
+            }
+            "function" => {
+                if let Some(ref function_name) = args.name {
+                    let matching = filter_by_function(&batch, function_name);
+                    if !matching.is_empty() && !silent {
                         println!("Found {} transaction(s) in ledger {}", matching.len(), ledger_seq);
                     }
                     all_transactions.extend(matching);
@@ -688,13 +911,20 @@ fn main() -> Result<()> {
                 }
             }
             "all" => {
-                // For "all" mode with ranges, just output each ledger separately
+                // For "all" mode with ranges, collect all ledger metadata
                 if !is_range {
                     println!("\nLedger batch: {} to {}", batch.start_sequence, batch.end_sequence);
                     println!("Number of ledgers in batch: {}\n", batch.ledger_close_metas.len());
-                    let json = to_json(&batch, &args.query, args.address.as_deref())?;
+                    let json = to_json(&batch, &args.query, args.address.as_deref(), args.name.as_deref())?;
                     println!("{}", json);
                     return Ok(());
+                } else {
+                    // For range queries with "all", collect the full ledger metadata
+                    for meta in batch.ledger_close_metas.as_vec() {
+                        if let Ok(meta_json) = serde_json::to_value(meta) {
+                            all_transactions.push(meta_json);
+                        }
+                    }
                 }
             }
             _ => {}
@@ -705,14 +935,24 @@ fn main() -> Result<()> {
     if is_range {
         println!("\nProcessed {} ledgers", total_processed);
 
-        let result = serde_json::json!({
-            "start_sequence": ledger_range.start,
-            "end_sequence": ledger_range.end,
-            "ledgers_processed": total_processed,
-            "address": args.address,
-            "transactions": all_transactions,
-            "count": all_transactions.len()
-        });
+        let result = if args.query == "all" {
+            serde_json::json!({
+                "start_sequence": ledger_range.start,
+                "end_sequence": ledger_range.end,
+                "ledgers_processed": total_processed,
+                "ledgers": all_transactions,
+                "count": all_transactions.len()
+            })
+        } else {
+            serde_json::json!({
+                "start_sequence": ledger_range.start,
+                "end_sequence": ledger_range.end,
+                "ledgers_processed": total_processed,
+                "address": args.address,
+                "transactions": all_transactions,
+                "count": all_transactions.len()
+            })
+        };
 
         println!("\n{}", serde_json::to_string_pretty(&result)?);
     } else {
@@ -735,7 +975,7 @@ fn main() -> Result<()> {
         println!("\nLedger batch: {} to {}", batch.start_sequence, batch.end_sequence);
         println!("Number of ledgers in batch: {}\n", batch.ledger_close_metas.len());
 
-        let json = to_json(&batch, &args.query, args.address.as_deref())?;
+        let json = to_json(&batch, &args.query, args.address.as_deref(), args.name.as_deref())?;
         println!("{}", json);
     }
 
