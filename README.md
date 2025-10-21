@@ -1,13 +1,16 @@
-# Stellar Data Query Tool
+# Stellar Data Tool
 
-A command-line tool for querying Stellar blockchain data from AWS public data lakes and converting XDR to JSON.
+A command line tool and REST API for querying the Stellar blockchain using public data lakes and RPC nodes, providing JSON formatted responses to simplify data availability.
 
 ## Overview
 
-This tool downloads Stellar ledger data from the public S3 bucket at `s3://aws-public-blockchain/v1.1/stellar/ledgers/`, decompresses the Zstandard-compressed XDR data, and converts it to JSON format.
+This tool downloads Stellar ledger data from the public S3 bucket at `s3://aws-public-blockchain/v1.1/stellar/ledgers/`, decompresses the Zstandard-compressed XDR data, and converts it to JSON format. If data isn't available (Most recent blocks) it falls back to querying an RPC node.
+
+Available currently for Stellar mainnet only. Testnet coming soon (hopefully)
 
 ## Features
 
+- **Dual Mode Operation**: Use as CLI tool or REST API server
 - Downloads ledger data directly from AWS S3 public data lake
 - Automatically calculates correct S3 paths using partition and batch logic
 - Decompresses Zstandard (.zst) compressed files
@@ -17,6 +20,10 @@ This tool downloads Stellar ledger data from the public S3 bucket at `s3://aws-p
 - Query single ledgers or ranges of ledgers
 - Query recent ledgers using negative values (e.g., `-999` for last 999 blocks)
 - Filter transactions by Stellar address
+- **REST API**: HTTP endpoints for web application integration
+- **Smart Contract Queries**: Filter by contract address or function name
+- **Token Balances**: Query current balances with built-in token shortcuts
+- **Automatic RPC Fallback**: Seamless fallback to RPC for most recent ledgers
 
 ## Installation
 
@@ -29,6 +36,12 @@ cargo build --release
 The binary will be available at `./target/release/stellar-data`
 
 ## Usage
+
+The tool can be used in two modes:
+1. **CLI Mode**: Direct command-line queries with output to stdout
+2. **REST API Mode**: HTTP server exposing API endpoints
+
+### CLI Mode
 
 Basic syntax:
 
@@ -172,6 +185,230 @@ Output format:
 }
 ```
 
+### REST API Mode
+
+Start the API server to enable HTTP access to Stellar blockchain data:
+
+```bash
+./target/release/stellar-data --server --port 3000
+```
+
+Or use the default port (80):
+```bash
+./target/release/stellar-data --server
+```
+
+Once started, the server will display:
+```
+Stellar Data API Server
+======================
+Listening on http://0.0.0.0:3000
+
+Available endpoints:
+  GET /help
+  GET /transactions?ledger=<LEDGER>&address=<ADDRESS>
+  GET /all?ledger=<LEDGER>
+  GET /contract?ledger=<LEDGER>&address=<CONTRACT>
+  GET /function?ledger=<LEDGER>&name=<FUNCTION>
+  GET /balance?address=<ADDRESS>&token=<TOKEN>
+```
+
+#### REST API Endpoints
+
+All endpoints return JSON responses (except `/help` which returns HTML documentation).
+
+##### `GET /help`
+
+Returns an interactive HTML documentation page with detailed information about all endpoints.
+
+```bash
+curl http://localhost:3000/help
+```
+
+Or visit `http://localhost:3000/help` in your browser for a formatted documentation page.
+
+##### `GET /transactions`
+
+Get transactions from specified ledger(s), optionally filtered by address.
+
+**Parameters:**
+- `ledger` (required): Ledger sequence number, range, or negative value
+- `address` (optional): Stellar address to filter transactions
+
+**Examples:**
+
+```bash
+# Single ledger
+curl "http://localhost:3000/transactions?ledger=50000000"
+
+# Ledger range
+curl "http://localhost:3000/transactions?ledger=50000000-50000005"
+
+# Recent ledgers
+curl "http://localhost:3000/transactions?ledger=-10"
+
+# Filter by address
+curl "http://localhost:3000/transactions?ledger=50000000&address=GALPCCZN4YXA3YMJHKL6CVIECKPLJJCTVMSNYWBTKJW4K5HQLYLDMZTB"
+```
+
+**Response:**
+```json
+{
+  "start_sequence": 50000000,
+  "end_sequence": 50000005,
+  "ledgers_processed": 6,
+  "address": null,
+  "transactions": [...],
+  "count": 4523
+}
+```
+
+##### `GET /all`
+
+Get complete ledger metadata including all transaction processing details.
+
+**Parameters:**
+- `ledger` (required): Ledger sequence number, range, or negative value
+
+**Examples:**
+
+```bash
+# Single ledger
+curl "http://localhost:3000/all?ledger=50000000"
+
+# Ledger range
+curl "http://localhost:3000/all?ledger=50000000-50000002"
+
+# Recent ledgers
+curl "http://localhost:3000/all?ledger=-5"
+```
+
+**Response:**
+```json
+{
+  "start_sequence": 50000000,
+  "end_sequence": 50000000,
+  "ledgers_processed": 1,
+  "ledgers": [...],
+  "count": 1
+}
+```
+
+##### `GET /contract`
+
+Get transactions involving a specific smart contract.
+
+**Parameters:**
+- `ledger` (required): Ledger sequence number, range, or negative value
+- `address` (required): Contract address (starts with 'C')
+
+**Examples:**
+
+```bash
+# Search contract invocations in ledger range
+curl "http://localhost:3000/contract?ledger=50000000-50000010&address=CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC"
+
+# Search recent ledgers
+curl "http://localhost:3000/contract?ledger=-100&address=CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC"
+```
+
+**Response:**
+```json
+{
+  "start_sequence": 50000000,
+  "end_sequence": 50000010,
+  "ledgers_processed": 11,
+  "contract": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+  "transactions": [...],
+  "count": 15
+}
+```
+
+##### `GET /function`
+
+Get transactions calling a specific contract function by name.
+
+**Parameters:**
+- `ledger` (required): Ledger sequence number, range, or negative value
+- `name` (required): Function name (e.g., 'transfer', 'approve', 'mint')
+
+**Examples:**
+
+```bash
+# Search for transfer function calls
+curl "http://localhost:3000/function?ledger=50000000-50000100&name=transfer"
+
+# Search recent ledgers for approve calls
+curl "http://localhost:3000/function?ledger=-1000&name=approve"
+```
+
+**Response:**
+```json
+{
+  "start_sequence": 50000000,
+  "end_sequence": 50000100,
+  "ledgers_processed": 101,
+  "function": "transfer",
+  "transactions": [...],
+  "count": 234
+}
+```
+
+##### `GET /balance`
+
+Get current token balance for a Stellar address using RPC.
+
+**Parameters:**
+- `address` (required): Stellar account address
+- `token` (required): Token contract address or shortcut
+
+**Token Shortcuts:**
+- `xlm` - Native Stellar Lumens
+- `usdc` - USD Coin
+- `usdt` - Tether USD
+- `aqua` - Aquarius token
+- `btc` - Bitcoin (wrapped)
+
+**Examples:**
+
+```bash
+# Get XLM balance
+curl "http://localhost:3000/balance?address=GALPCCZN4YXA3YMJHKL6CVIECKPLJJCTVMSNYWBTKJW4K5HQLYLDMZTB&token=xlm"
+
+# Get USDC balance
+curl "http://localhost:3000/balance?address=GALPCCZN4YXA3YMJHKL6CVIECKPLJJCTVMSNYWBTKJW4K5HQLYLDMZTB&token=usdc"
+
+# Get balance for specific token contract
+curl "http://localhost:3000/balance?address=GALPCCZN4YXA3YMJHKL6CVIECKPLJJCTVMSNYWBTKJW4K5HQLYLDMZTB&token=CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC"
+```
+
+**Response:**
+```json
+{
+  "address": "GALPCCZN4YXA3YMJHKL6CVIECKPLJJCTVMSNYWBTKJW4K5HQLYLDMZTB",
+  "token": "CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA",
+  "balance": "1121995790",
+  "raw_balance": 1121995790
+}
+```
+
+#### REST API Features
+
+- **CORS Enabled**: The API has permissive CORS enabled for easy integration with web applications
+- **Automatic Fallback**: Recent ledgers automatically fall back to RPC when not available in S3
+- **Error Resilience**: Individual ledger failures in ranges don't stop processing
+- **Interactive Documentation**: Visit `/help` endpoint in a browser for full interactive documentation
+
+#### REST API vs CLI Mode
+
+| Feature | CLI Mode | REST API Mode |
+|---------|----------|---------------|
+| **Use Case** | One-time queries, scripts, automation | Web applications, continuous access, integration |
+| **Output** | stdout (console) | HTTP JSON responses |
+| **Concurrency** | Single query per invocation | Multiple concurrent requests |
+| **Setup** | Run directly | Start server once |
+| **Documentation** | `--help` flag | Interactive `/help` endpoint |
+
 ## How It Works
 
 ### URL Generation
@@ -211,17 +448,6 @@ The tool uses these default values from the S3 data lake configuration:
 - **Batches per partition**: 64,000
 - **Base URL**: `https://aws-public-blockchain.s3.us-east-2.amazonaws.com`
 
-## Dependencies
-
-- `stellar-xdr` v24.0.0 - Stellar XDR encoding/decoding
-- `stellar-strkey` v0.0.13 - Stellar address encoding/decoding
-- `reqwest` - HTTP client for downloading from S3 and Horizon API
-- `zstd` - Zstandard decompression
-- `clap` - Command-line argument parsing
-- `anyhow` - Error handling
-- `serde` - Serialization framework
-- `serde_json` - JSON serialization
-
 ## Data Structure
 
 The XDR files contain `LedgerCloseMetaBatch` structures with:
@@ -249,4 +475,8 @@ Each `LedgerCloseMeta` can be V0, V1, or V2 format, containing:
 
 ## License
 
-See LICENSE file for details.
+MIT
+
+## Contributions
+
+Feel free to improve and put in a pull request ♥️

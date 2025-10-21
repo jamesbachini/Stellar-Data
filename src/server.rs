@@ -1,7 +1,7 @@
 use axum::{
     extract::Query,
     http::StatusCode,
-    response::{IntoResponse, Json},
+    response::{Html, IntoResponse, Json},
     routing::get,
     Router,
 };
@@ -359,186 +359,379 @@ pub async fn balance_handler(
 
 /// Handler for /help endpoint
 /// Returns API documentation and usage information
-pub async fn help_handler() -> Json<Value> {
-    let help_info = json!({
-        "name": "Stellar Data API",
-        "version": "1.0.0",
-        "description": "Query Stellar blockchain data from AWS S3 public data lakes and RPC endpoints",
-        "base_url": "http://0.0.0.0:3000",
-        "endpoints": [
-            {
-                "path": "/help",
-                "method": "GET",
-                "description": "Display this help information",
-                "parameters": [],
-                "examples": [
-                    "/help"
-                ]
-            },
-            {
-                "path": "/transactions",
-                "method": "GET",
-                "description": "Get transactions from specified ledger(s), optionally filtered by address",
-                "parameters": [
-                    {
-                        "name": "ledger",
-                        "type": "string",
-                        "required": true,
-                        "description": "Ledger sequence number, range (e.g. '100-200'), or negative value for recent ledgers (e.g. '-10' for last 10 ledgers)"
-                    },
-                    {
-                        "name": "address",
-                        "type": "string",
-                        "required": false,
-                        "description": "Stellar address to filter transactions (e.g. 'GALPCCZN4YXA3YMJHKL6CVIECKPLJJCTVMSNYWBTKJW4K5HQLYLDMZTB')"
-                    }
-                ],
-                "examples": [
-                    "/transactions?ledger=50000000",
-                    "/transactions?ledger=50000000-50000005",
-                    "/transactions?ledger=-10",
-                    "/transactions?ledger=50000000&address=GALPCCZN4YXA3YMJHKL6CVIECKPLJJCTVMSNYWBTKJW4K5HQLYLDMZTB"
-                ]
-            },
-            {
-                "path": "/all",
-                "method": "GET",
-                "description": "Get complete ledger metadata including all transaction processing details",
-                "parameters": [
-                    {
-                        "name": "ledger",
-                        "type": "string",
-                        "required": true,
-                        "description": "Ledger sequence number, range, or negative value"
-                    }
-                ],
-                "examples": [
-                    "/all?ledger=50000000",
-                    "/all?ledger=50000000-50000002",
-                    "/all?ledger=-5"
-                ]
-            },
-            {
-                "path": "/contract",
-                "method": "GET",
-                "description": "Get transactions involving a specific smart contract",
-                "parameters": [
-                    {
-                        "name": "ledger",
-                        "type": "string",
-                        "required": true,
-                        "description": "Ledger sequence number, range, or negative value"
-                    },
-                    {
-                        "name": "address",
-                        "type": "string",
-                        "required": true,
-                        "description": "Contract address (starts with 'C')"
-                    }
-                ],
-                "examples": [
-                    "/contract?ledger=50000000-50000010&address=CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
-                    "/contract?ledger=-100&address=CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC"
-                ]
-            },
-            {
-                "path": "/function",
-                "method": "GET",
-                "description": "Get transactions calling a specific contract function by name",
-                "parameters": [
-                    {
-                        "name": "ledger",
-                        "type": "string",
-                        "required": true,
-                        "description": "Ledger sequence number, range, or negative value"
-                    },
-                    {
-                        "name": "name",
-                        "type": "string",
-                        "required": true,
-                        "description": "Function name (e.g. 'transfer', 'approve', 'mint')"
-                    }
-                ],
-                "examples": [
-                    "/function?ledger=50000000-50000100&name=transfer",
-                    "/function?ledger=-1000&name=approve"
-                ]
-            },
-            {
-                "path": "/balance",
-                "method": "GET",
-                "description": "Get current token balance for a Stellar address using RPC",
-                "parameters": [
-                    {
-                        "name": "address",
-                        "type": "string",
-                        "required": true,
-                        "description": "Stellar account address"
-                    },
-                    {
-                        "name": "token",
-                        "type": "string",
-                        "required": true,
-                        "description": "Token contract address or shortcut ('xlm', 'usdc', 'usdt', 'aqua', 'btc')"
-                    }
-                ],
-                "examples": [
-                    "/balance?address=GALPCCZN4YXA3YMJHKL6CVIECKPLJJCTVMSNYWBTKJW4K5HQLYLDMZTB&token=xlm",
-                    "/balance?address=GALPCCZN4YXA3YMJHKL6CVIECKPLJJCTVMSNYWBTKJW4K5HQLYLDMZTB&token=usdc",
-                    "/balance?address=GALPCCZN4YXA3YMJHKL6CVIECKPLJJCTVMSNYWBTKJW4K5HQLYLDMZTB&token=CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC"
-                ]
-            }
-        ],
-        "notes": {
-            "ledger_ranges": "Ledger ranges are inclusive. Use '-N' for the last N ledgers (e.g. '-10' for most recent 10 ledgers)",
-            "data_source": "Data is fetched from AWS S3 public blockchain data lake with automatic fallback to Stellar RPC for recent ledgers",
-            "address_format": "Stellar addresses are base32-encoded Ed25519 public keys starting with 'G' (accounts) or 'C' (contracts)",
-            "token_shortcuts": "Supported token shortcuts: xlm, usdc, usdt, aqua, btc",
-            "response_format": "All responses are JSON with metadata including start_sequence, end_sequence, ledgers_processed, and results",
-            "error_handling": "Individual ledger failures in ranges are logged but don't stop processing"
-        },
-        "response_structure": {
-            "transactions_endpoint": {
-                "start_sequence": "First ledger in range",
-                "end_sequence": "Last ledger in range",
-                "ledgers_processed": "Number of successfully processed ledgers",
-                "address": "Filter address (if provided)",
-                "transactions": "Array of transaction objects",
-                "count": "Number of transactions returned"
-            },
-            "all_endpoint": {
-                "start_sequence": "First ledger in range",
-                "end_sequence": "Last ledger in range",
-                "ledgers_processed": "Number of successfully processed ledgers",
-                "ledgers": "Array of full ledger metadata objects",
-                "count": "Number of ledgers returned"
-            },
-            "contract_endpoint": {
-                "start_sequence": "First ledger in range",
-                "end_sequence": "Last ledger in range",
-                "ledgers_processed": "Number of successfully processed ledgers",
-                "contract": "Contract address filter",
-                "transactions": "Array of matching transaction objects",
-                "count": "Number of transactions returned"
-            },
-            "function_endpoint": {
-                "start_sequence": "First ledger in range",
-                "end_sequence": "Last ledger in range",
-                "ledgers_processed": "Number of successfully processed ledgers",
-                "function": "Function name filter",
-                "transactions": "Array of matching transaction objects",
-                "count": "Number of transactions returned"
-            },
-            "balance_endpoint": {
-                "address": "Account address",
-                "token": "Token contract address",
-                "balance": "Current balance",
-                "decimals": "Token decimals"
-            }
+pub async fn help_handler() -> Html<String> {
+    let html = r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stellar Data API Documentation</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
         }
-    });
+        header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            border-radius: 8px;
+            margin-bottom: 30px;
+        }
+        header h1 {
+            margin: 0 0 10px 0;
+            font-size: 2.5em;
+        }
+        header p {
+            margin: 0;
+            font-size: 1.1em;
+            opacity: 0.95;
+        }
+        .version {
+            display: inline-block;
+            background: rgba(255,255,255,0.2);
+            padding: 4px 12px;
+            border-radius: 4px;
+            font-size: 0.9em;
+            margin-top: 10px;
+        }
+        .endpoint {
+            background: white;
+            padding: 25px;
+            margin-bottom: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .endpoint h2 {
+            margin-top: 0;
+            color: #667eea;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .method {
+            display: inline-block;
+            background: #10b981;
+            color: white;
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 0.75em;
+            font-weight: bold;
+        }
+        .param-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 15px 0;
+        }
+        .param-table th {
+            background: #f8f9fa;
+            text-align: left;
+            padding: 10px;
+            border-bottom: 2px solid #dee2e6;
+        }
+        .param-table td {
+            padding: 10px;
+            border-bottom: 1px solid #dee2e6;
+        }
+        .required {
+            color: #dc3545;
+            font-weight: bold;
+        }
+        .optional {
+            color: #6c757d;
+        }
+        .example {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 4px;
+            margin: 10px 0;
+            border-left: 4px solid #667eea;
+        }
+        .example-title {
+            font-weight: bold;
+            margin-bottom: 10px;
+            color: #667eea;
+        }
+        .example code {
+            display: block;
+            background: #2d3748;
+            color: #68d391;
+            padding: 10px;
+            border-radius: 4px;
+            margin: 5px 0;
+            overflow-x: auto;
+            font-family: 'Courier New', monospace;
+        }
+        .example a {
+            color: #68d391;
+            text-decoration: none;
+        }
+        .example a:hover {
+            text-decoration: underline;
+        }
+        .notes {
+            background: #fff3cd;
+            border: 1px solid #ffc107;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+        }
+        .notes h3 {
+            margin-top: 0;
+            color: #856404;
+        }
+        .notes ul {
+            margin: 0;
+            padding-left: 20px;
+        }
+        .notes li {
+            margin: 10px 0;
+        }
+        .response-structure {
+            background: #e7f3ff;
+            border: 1px solid #0066cc;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+        }
+        .response-structure h3 {
+            margin-top: 0;
+            color: #004085;
+        }
+        .response-structure pre {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 4px;
+            overflow-x: auto;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Stellar Data API</h1>
+        <p>Query Stellar blockchain data from AWS S3 public data lakes and RPC endpoints</p>
+        <div class="version">v1.0.0</div>
+    </header>
 
-    Json(help_info)
+    <div class="endpoint">
+        <h2><span class="method">GET</span> /help</h2>
+        <p>Display this help information (you are here!)</p>
+        <div class="example">
+            <div class="example-title">Example:</div>
+            <code><a href="/help">/help</a></code>
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <h2><span class="method">GET</span> /transactions</h2>
+        <p>Get transactions from specified ledger(s), optionally filtered by address.</p>
+
+        <table class="param-table">
+            <thead>
+                <tr>
+                    <th>Parameter</th>
+                    <th>Type</th>
+                    <th>Required</th>
+                    <th>Description</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><strong>ledger</strong></td>
+                    <td>string</td>
+                    <td class="required">Required</td>
+                    <td>Ledger sequence number, range (e.g. '100-200'), or negative value for recent ledgers (e.g. '-10' for last 10 ledgers)</td>
+                </tr>
+                <tr>
+                    <td><strong>address</strong></td>
+                    <td>string</td>
+                    <td class="optional">Optional</td>
+                    <td>Stellar address to filter transactions (e.g. 'GALPCCZN4YXA3YMJHKL6CVIECKPLJJCTVMSNYWBTKJW4K5HQLYLDMZTB')</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <div class="example">
+            <div class="example-title">Examples:</div>
+            <code><a href="/transactions?ledger=50000000">/transactions?ledger=50000000</a></code>
+            <code><a href="/transactions?ledger=50000000-50000005">/transactions?ledger=50000000-50000005</a></code>
+            <code><a href="/transactions?ledger=-10">/transactions?ledger=-10</a></code>
+            <code><a href="/transactions?ledger=50000000&address=GALPCCZN4YXA3YMJHKL6CVIECKPLJJCTVMSNYWBTKJW4K5HQLYLDMZTB">/transactions?ledger=50000000&address=GALPCCZN4YXA3YMJHKL6CVIECKPLJJCTVMSNYWBTKJW4K5HQLYLDMZTB</a></code>
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <h2><span class="method">GET</span> /all</h2>
+        <p>Get complete ledger metadata including all transaction processing details.</p>
+
+        <table class="param-table">
+            <thead>
+                <tr>
+                    <th>Parameter</th>
+                    <th>Type</th>
+                    <th>Required</th>
+                    <th>Description</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><strong>ledger</strong></td>
+                    <td>string</td>
+                    <td class="required">Required</td>
+                    <td>Ledger sequence number, range, or negative value</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <div class="example">
+            <div class="example-title">Examples:</div>
+            <code><a href="/all?ledger=50000000">/all?ledger=50000000</a></code>
+            <code><a href="/all?ledger=50000000-50000002">/all?ledger=50000000-50000002</a></code>
+            <code><a href="/all?ledger=-5">/all?ledger=-5</a></code>
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <h2><span class="method">GET</span> /contract</h2>
+        <p>Get transactions involving a specific smart contract.</p>
+
+        <table class="param-table">
+            <thead>
+                <tr>
+                    <th>Parameter</th>
+                    <th>Type</th>
+                    <th>Required</th>
+                    <th>Description</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><strong>ledger</strong></td>
+                    <td>string</td>
+                    <td class="required">Required</td>
+                    <td>Ledger sequence number, range, or negative value</td>
+                </tr>
+                <tr>
+                    <td><strong>address</strong></td>
+                    <td>string</td>
+                    <td class="required">Required</td>
+                    <td>Contract address (starts with 'C')</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <div class="example">
+            <div class="example-title">Examples:</div>
+            <code><a href="/contract?ledger=50000000-50000010&address=CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC">/contract?ledger=50000000-50000010&address=CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC</a></code>
+            <code><a href="/contract?ledger=-100&address=CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC">/contract?ledger=-100&address=CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC</a></code>
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <h2><span class="method">GET</span> /function</h2>
+        <p>Get transactions calling a specific contract function by name.</p>
+
+        <table class="param-table">
+            <thead>
+                <tr>
+                    <th>Parameter</th>
+                    <th>Type</th>
+                    <th>Required</th>
+                    <th>Description</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><strong>ledger</strong></td>
+                    <td>string</td>
+                    <td class="required">Required</td>
+                    <td>Ledger sequence number, range, or negative value</td>
+                </tr>
+                <tr>
+                    <td><strong>name</strong></td>
+                    <td>string</td>
+                    <td class="required">Required</td>
+                    <td>Function name (e.g. 'transfer', 'approve', 'mint')</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <div class="example">
+            <div class="example-title">Examples:</div>
+            <code><a href="/function?ledger=50000000-50000100&name=transfer">/function?ledger=50000000-50000100&name=transfer</a></code>
+            <code><a href="/function?ledger=-1000&name=approve">/function?ledger=-1000&name=approve</a></code>
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <h2><span class="method">GET</span> /balance</h2>
+        <p>Get current token balance for a Stellar address using RPC.</p>
+
+        <table class="param-table">
+            <thead>
+                <tr>
+                    <th>Parameter</th>
+                    <th>Type</th>
+                    <th>Required</th>
+                    <th>Description</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><strong>address</strong></td>
+                    <td>string</td>
+                    <td class="required">Required</td>
+                    <td>Stellar account address</td>
+                </tr>
+                <tr>
+                    <td><strong>token</strong></td>
+                    <td>string</td>
+                    <td class="required">Required</td>
+                    <td>Token contract address or shortcut ('xlm', 'usdc', 'usdt', 'aqua', 'btc')</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <div class="example">
+            <div class="example-title">Examples:</div>
+            <code><a href="/balance?address=GALPCCZN4YXA3YMJHKL6CVIECKPLJJCTVMSNYWBTKJW4K5HQLYLDMZTB&token=xlm">/balance?address=GALPCCZN4YXA3YMJHKL6CVIECKPLJJCTVMSNYWBTKJW4K5HQLYLDMZTB&token=xlm</a></code>
+            <code><a href="/balance?address=GALPCCZN4YXA3YMJHKL6CVIECKPLJJCTVMSNYWBTKJW4K5HQLYLDMZTB&token=usdc">/balance?address=GALPCCZN4YXA3YMJHKL6CVIECKPLJJCTVMSNYWBTKJW4K5HQLYLDMZTB&token=usdc</a></code>
+            <code><a href="/balance?address=GALPCCZN4YXA3YMJHKL6CVIECKPLJJCTVMSNYWBTKJW4K5HQLYLDMZTB&token=CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC">/balance?address=GALPCCZN4YXA3YMJHKL6CVIECKPLJJCTVMSNYWBTKJW4K5HQLYLDMZTB&token=CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC</a></code>
+        </div>
+    </div>
+
+    <div class="notes">
+        <h3>Important Notes</h3>
+        <ul>
+            <li><strong>Ledger Ranges:</strong> Ledger ranges are inclusive. Use '-N' for the last N ledgers (e.g. '-10' for most recent 10 ledgers)</li>
+            <li><strong>Data Source:</strong> Data is fetched from AWS S3 public blockchain data lake with automatic fallback to Stellar RPC for recent ledgers</li>
+            <li><strong>Address Format:</strong> Stellar addresses are base32-encoded Ed25519 public keys starting with 'G' (accounts) or 'C' (contracts)</li>
+            <li><strong>Token Shortcuts:</strong> Supported token shortcuts: xlm, usdc, usdt, aqua, btc</li>
+            <li><strong>Response Format:</strong> All responses (except /help) are JSON with metadata including start_sequence, end_sequence, ledgers_processed, and results</li>
+            <li><strong>Error Handling:</strong> Individual ledger failures in ranges are logged but don't stop processing</li>
+        </ul>
+    </div>
+
+    <div class="response-structure">
+        <h3>Response Structure</h3>
+        <p>All API endpoints (except /help) return JSON responses with the following general structure:</p>
+        <pre>{
+  "start_sequence": &lt;first ledger in range&gt;,
+  "end_sequence": &lt;last ledger in range&gt;,
+  "ledgers_processed": &lt;number of successfully processed ledgers&gt;,
+  &lt;endpoint-specific fields&gt;,
+  "count": &lt;number of results&gt;
+}</pre>
+    </div>
+</body>
+</html>"#;
+
+    Html(html.to_string())
 }
 
 /// Create and configure the Axum router
