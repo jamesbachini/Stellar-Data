@@ -94,11 +94,39 @@ pub struct Args {
         help = "Token contract address or shortcut (xlm, usdc, kale)"
     )]
     pub token: Option<String>,
+
+    /// Start API server mode instead of CLI mode
+    ///
+    /// When enabled, starts an HTTP server that exposes REST API endpoints
+    /// for querying Stellar blockchain data
+    #[arg(
+        short = 's',
+        long,
+        help = "Start API server mode"
+    )]
+    pub server: bool,
+
+    /// Port for API server (default: 80)
+    ///
+    /// Only used when --server flag is set
+    #[arg(
+        short = 'p',
+        long,
+        default_value = "80",
+        value_name = "PORT",
+        help = "Port number for API server"
+    )]
+    pub port: u16,
 }
 
 impl Args {
     /// Validate arguments based on query type
     pub fn validate(&self) -> anyhow::Result<()> {
+        // In server mode, we don't need to validate query-specific args
+        if self.server {
+            return Ok(());
+        }
+
         match self.query.as_str() {
             "address" | "contract" => {
                 if self.address.is_none() {

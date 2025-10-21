@@ -12,7 +12,8 @@
       "WebFetch(domain:github.com)",
       "Bash(aws s3 ls:*)",
       "WebFetch(domain:developers.stellar.org)",
-      "Read(//home/james/.cargo/registry/src/**)"
+      "Read(//home/james/.cargo/registry/src/**)",
+      "Bash(python3:*)"
     ],
     "deny": [],
     "ask": []

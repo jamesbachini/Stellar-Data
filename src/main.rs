@@ -7,6 +7,7 @@ mod ledger;
 mod data;
 mod stellar;
 mod output;
+mod server;
 
 use cli::Args;
 use ledger::{LedgerRange, get_latest_ledger};
@@ -16,11 +17,17 @@ use data::rpc::fetch_from_rpc;
 use stellar::filters::{filter_by_address, filter_by_contract, filter_by_function};
 use output::to_json;
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let args = Args::parse();
 
     // Validate arguments
     args.validate()?;
+
+    // If server mode is enabled, start the API server
+    if args.server {
+        return server::start_server(args.port).await;
+    }
 
     // Handle balance query separately (doesn't need ledger data)
     if args.query == "balance" {
