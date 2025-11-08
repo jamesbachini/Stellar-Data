@@ -467,6 +467,18 @@ Each `LedgerCloseMeta` can be V0, V1, or V2 format, containing:
 - Upgrade processing information
 - SCP consensus information
 
+## Publishing Notes
+There's a bug in WSL that prevents standard mounted drives from interacting with cargo publish
+
+```bash
+sudo mkdir -p /mnt/Stellar-Data
+sudo mount -t drvfs 'C:\code\Stellar-Data' /mnt/Stellar-Data -o metadata
+cargo clean
+cargo package
+cargo publish --dry-run
+cargo publish
+```
+
 ## References
 
 - [Stellar Public Data Documentation](https://github.com/stellar/stellar-public-data)

@@ -21,7 +21,7 @@ Query Stellar blockchain data using RPC & Public data lake.
     stellar-data --ledger 50000000 --query transactions
     stellar-data --ledger 63864-63900 --query address --address GABC...
     stellar-data --server --port 8080
-    stellar-data --help
+    stellar-data --help (Provides more detailed options)
 
     For more information: https://github.com/jamesbachini/Stellar-Data"#;
 
