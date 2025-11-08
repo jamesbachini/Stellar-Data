@@ -2,11 +2,20 @@
 
 A command line tool and REST API for querying the Stellar blockchain using public data lakes and RPC nodes, providing JSON formatted responses to simplify data availability.
 
+## Quick Start
+
+```bash
+cargo install --locked stellar-data
+stellar-data --help
+```
+
 ## Overview
 
-This tool downloads Stellar ledger data from the public S3 bucket at `s3://aws-public-blockchain/v1.1/stellar/ledgers/`, decompresses the Zstandard-compressed XDR data, and converts it to JSON format. If data isn't available (Most recent blocks) it falls back to querying an RPC node.
+This tool downloads Stellar ledger data from the public S3 bucket at `s3://aws-public-blockchain/v1.1/stellar/ledgers/`, decompresses the Zstandard compressed XDR data, and converts it to JSON format. If data isn't available (Most recent blocks) it falls back to querying an RPC node.
 
 Available currently for Stellar mainnet only. Testnet coming soon (hopefully)
+
+Published to: https://crates.io/crates/stellar-data
 
 ## Features
 
