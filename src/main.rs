@@ -9,7 +9,7 @@ mod stellar;
 mod output;
 mod server;
 
-use cli::Args;
+use cli::{Args, LONG_ABOUT};
 use ledger::{LedgerRange, get_latest_ledger};
 use data::{Config, parse_xdr, query_balance};
 use data::s3::fetch_and_decompress;
@@ -19,6 +19,12 @@ use output::to_json;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // If no arguments provided, show just the long_about and exit
+    if std::env::args().len() == 1 {
+        println!("{}", LONG_ABOUT);
+        std::process::exit(0);
+    }
+
     let args = Args::parse();
 
     // Validate arguments

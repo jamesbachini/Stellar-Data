@@ -1,6 +1,6 @@
 [package]
 name = "stellar-data"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2021"
 license = "MIT"
 description = "A command line tool and REST API for querying the Stellar blockchain using public data lakes and RPC nodes, providing JSON formatted responses to simplify data availability"

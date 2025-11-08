@@ -1,20 +1,37 @@
 use clap::Parser;
 
+pub const LONG_ABOUT: &str = r#"                       /   \
+               )      ((   ))     (
+(@)           /|\      ))_((     /|\          (@)
+|-|          / | \    (/\|/\)   / | \         |-|
+| |---------/--|-voV---\>|</--Vov-|--\--------| |
+| |              '^'   (o o)  '^'             | |
+| |             STELLAR DATA v0.1.2           | |
+| |___________________________________________| |
+|-|   /   /\ /         ( (       \ /\   \     |-|
+(@)   | /   V           \ \       V   \ |     (@)
+      |/                _) )_          \|
+                        '\ /'
+                          '
+Query Stellar blockchain data using RPC & Public data lake.
+    Downloads XDR data, decompresses it, and converts to JSON.
+
+    Examples:
+    stellar-data --query balance --address GG..123 --token xlm
+    stellar-data --ledger 50000000 --query transactions
+    stellar-data --ledger 63864-63900 --query address --address GABC...
+    stellar-data --server --port 8080
+    stellar-data --help
+
+    For more information: https://github.com/jamesbachini/Stellar-Data"#;
+
 /// Stellar blockchain data query tool for S3 public data lake
 #[derive(Parser, Debug)]
 #[command(
     author,
     version,
     about,
-    long_about = "Query Stellar blockchain data from public data lake.\n\
-                  Downloads XDR data, decompresses it, and converts to JSON.\n\n\
-                  Examples:\n  \
-                    stellar-data --ledger 50000000 --query transactions\n\
-                    stellar-data --ledger 63864-63900 --query address --address GABC...\n\
-                    stellar-data --ledger -999 --query transactions\n\
-                    stellar-data --ledger 59424051-59424060 --query contract --address CAB1...\n\
-                    stellar-data --ledger 59424051-59424060 --query function --name work\n\n\
-                  For more information: https://github.com/stellar/stellar-public-data"
+    long_about = LONG_ABOUT
 )]
 pub struct Args {
     /// Ledger/block number or range to query
