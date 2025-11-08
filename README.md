@@ -468,11 +468,10 @@ Each `LedgerCloseMeta` can be V0, V1, or V2 format, containing:
 - SCP consensus information
 
 ## Publishing Notes
-There's a bug in WSL that prevents standard mounted drives from interacting with cargo publish
+There's a bug in WSL that prevents metadata, use Windows console
 
 ```bash
-sudo mkdir -p /mnt/Stellar-Data
-sudo mount -t drvfs 'C:\code\Stellar-Data' /mnt/Stellar-Data -o metadata
+cargo login
 cargo clean
 cargo package
 cargo publish --dry-run
