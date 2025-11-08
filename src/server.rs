@@ -7,14 +7,12 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 
 use crate::data::{parse_xdr, query_balance, Config};
 use crate::data::s3::fetch_and_decompress;
 use crate::data::rpc::fetch_from_rpc;
 use crate::ledger::{get_latest_ledger, LedgerRange};
-use crate::output::to_json;
 use crate::stellar::filters::{filter_by_address, filter_by_contract, filter_by_function};
 use stellar_xdr::curr::LedgerCloseMeta;
 

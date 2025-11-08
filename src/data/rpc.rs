@@ -1,14 +1,16 @@
 use anyhow::{Context, Result};
-use stellar_xdr::curr::{LedgerCloseMeta, LedgerCloseMetaBatch, Limits, ReadXdr, WriteXdr, ScVal};
+use stellar_xdr::curr::{LedgerCloseMeta, LedgerCloseMetaBatch, Limits, ReadXdr, WriteXdr};
 use stellar_strkey::Strkey;
 use crate::data::Config;
 
-/// RPC response structures
+/// RPC response structures (currently unused, kept for reference)
+#[allow(dead_code)]
 #[derive(serde::Deserialize)]
 struct RpcLedgerResponse {
     ledgers: Vec<RpcLedger>,
 }
 
+#[allow(dead_code)]
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RpcLedger {

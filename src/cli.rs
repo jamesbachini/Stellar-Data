@@ -14,7 +14,6 @@ use clap::Parser;
                     stellar-data --ledger -999 --query transactions\n\
                     stellar-data --ledger 59424051-59424060 --query contract --address CAB1...\n\
                     stellar-data --ledger 59424051-59424060 --query function --name work\n\n\
-
                   For more information: https://github.com/stellar/stellar-public-data"
 )]
 pub struct Args {

@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 
+#[allow(dead_code)]
 #[derive(serde::Deserialize)]
 struct HorizonLedger {
     sequence: u32,

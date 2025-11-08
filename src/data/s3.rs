@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 
 /// Configuration from the S3 data lake
 pub struct Config {
+    #[allow(dead_code)]
     pub network_passphrase: String,
     pub ledgers_per_batch: u32,
     pub batches_per_partition: u32,
