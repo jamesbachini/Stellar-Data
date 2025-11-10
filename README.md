@@ -480,6 +480,7 @@ Each `LedgerCloseMeta` can be V0, V1, or V2 format, containing:
 There's a bug in WSL that prevents metadata, use Windows console
 
 ```bash
+cargo test
 cargo login
 cargo clean
 cargo package
