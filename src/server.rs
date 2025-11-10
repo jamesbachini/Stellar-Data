@@ -9,7 +9,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tower_http::cors::CorsLayer;
 
-use crate::data::{parse_xdr, query_balance, Config};
+use crate::config::Config;
+use crate::data::{parse_xdr, query_balance, query_price};
 use crate::data::s3::fetch_and_decompress;
 use crate::data::rpc::fetch_from_rpc;
 use crate::ledger::{get_latest_ledger, LedgerRange};
@@ -44,6 +45,11 @@ pub struct FunctionQuery {
 pub struct BalanceQuery {
     address: String,
     token: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PriceQuery {
+    asset: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -350,6 +356,18 @@ pub async fn balance_handler(
 
     let result = query_balance(&params.address, token_contract).map_err(|e| ErrorResponse {
         error: format!("Failed to query balance: {}", e),
+    })?;
+
+    Ok(Json(result))
+}
+
+/// Handler for /price endpoint
+/// Returns oracle price for an asset
+pub async fn price_handler(
+    Query(params): Query<PriceQuery>,
+) -> Result<Json<Value>, ErrorResponse> {
+    let result = query_price(&params.asset).map_err(|e| ErrorResponse {
+        error: format!("Failed to query price: {}", e),
     })?;
 
     Ok(Json(result))
@@ -703,6 +721,38 @@ pub async fn help_handler() -> Html<String> {
         </div>
     </div>
 
+    <div class="endpoint">
+        <h2><span class="method">GET</span> /price</h2>
+        <p>Get current oracle price for an asset from the Reflector oracle.</p>
+
+        <table class="param-table">
+            <thead>
+                <tr>
+                    <th>Parameter</th>
+                    <th>Type</th>
+                    <th>Required</th>
+                    <th>Description</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><strong>asset</strong></td>
+                    <td>string</td>
+                    <td class="required">Required</td>
+                    <td>Asset symbol (btc, eth, etc.), contract address (C...), or token shortcut (xlm, usdc, kale)</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <div class="example">
+            <div class="example-title">Examples:</div>
+            <code><a href="/price?asset=btc">/price?asset=btc</a></code>
+            <code><a href="/price?asset=eth">/price?asset=eth</a></code>
+            <code><a href="/price?asset=xlm">/price?asset=xlm</a></code>
+            <code><a href="/price?asset=CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC">/price?asset=CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC</a></code>
+        </div>
+    </div>
+
     <div class="notes">
         <h3>Important Notes</h3>
         <ul>
@@ -741,6 +791,7 @@ pub fn create_router() -> Router {
         .route("/contract", get(contract_handler))
         .route("/function", get(function_handler))
         .route("/balance", get(balance_handler))
+        .route("/price", get(price_handler))
         .layer(CorsLayer::permissive())
 }
 
@@ -761,6 +812,7 @@ pub async fn start_server(port: u16) -> anyhow::Result<()> {
     println!("  GET /contract?ledger=<LEDGER>&address=<CONTRACT>");
     println!("  GET /function?ledger=<LEDGER>&name=<FUNCTION>");
     println!("  GET /balance?address=<ADDRESS>&token=<TOKEN>");
+    println!("  GET /price?asset=<ASSET>");
     println!("\nFor detailed API documentation, visit:");
     println!("  http://127.0.0.1:{}/help\n", port);
 

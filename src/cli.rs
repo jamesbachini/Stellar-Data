@@ -6,7 +6,7 @@ pub const LONG_ABOUT: &str = r#"                       /   \
 |-|          / | \    (/\|/\)   / | \         |-|
 | |---------/--|-voV---\>|</--Vov-|--\--------| |
 | |              '^'   (o o)  '^'             | |
-| |             STELLAR DATA v0.1.2           | |
+| |             STELLAR DATA v0.1.3           | |
 | |___________________________________________| |
 |-|   /   /\ /         ( (       \ /\   \     |-|
 (@)   | /   V           \ \       V   \ |     (@)
@@ -18,6 +18,8 @@ Query Stellar blockchain data using RPC & Public data lake.
 
     Examples:
     stellar-data --query balance --address GG..123 --token xlm
+    stellar-data --query price --asset btc
+    stellar-data --query price --asset CB23WRD...
     stellar-data --ledger 50000000 --query transactions
     stellar-data --ledger 63864-63900 --query address --address GABC...
     stellar-data --server --port 8080
@@ -60,12 +62,13 @@ pub struct Args {
     ///   contract     - Transactions involving a specific contract (requires --address)
     ///   function     - Transactions calling a specific function (requires --name)
     ///   balance      - Token balance for an address (requires --address and --token)
+    ///   price        - Oracle price for an asset (requires --asset)
     #[arg(
         short,
         long,
         default_value = "all",
         value_name = "TYPE",
-        help = "Query type: 'all', 'transactions', 'address', 'contract', 'function', or 'balance'"
+        help = "Query type: 'all', 'transactions', 'address', 'contract', 'function', 'balance', or 'price'"
     )]
     pub query: String,
 
@@ -110,6 +113,21 @@ pub struct Args {
         help = "Token contract address or shortcut (xlm, usdc, kale)"
     )]
     pub token: Option<String>,
+
+    /// Asset symbol or contract address for price queries
+    ///
+    /// Required when using --query price
+    /// Can be:
+    ///   - External asset symbol: btc, eth, etc.
+    ///   - Stellar contract address: C...
+    ///   - Token shortcut: xlm, usdc, kale
+    #[arg(
+        short = 'A',
+        long,
+        value_name = "ASSET",
+        help = "Asset symbol or contract address for price queries"
+    )]
+    pub asset: Option<String>,
 
     /// Start API server mode instead of CLI mode
     ///
@@ -169,6 +187,12 @@ impl Args {
                 }
                 // balance doesn't require ledger
             }
+            "price" => {
+                if self.asset.is_none() {
+                    anyhow::bail!("--asset is required when using --query price");
+                }
+                // price doesn't require ledger
+            }
             "all" | "transactions" => {
                 if self.ledger.is_none() {
                     anyhow::bail!("--ledger is required when using --query {}", self.query);
@@ -176,7 +200,7 @@ impl Args {
             }
             _ => {
                 anyhow::bail!(
-                    "Unsupported query type: {}. Use 'all', 'transactions', 'address', 'contract', 'function', or 'balance'",
+                    "Unsupported query type: {}. Use 'all', 'transactions', 'address', 'contract', 'function', 'balance', or 'price'",
                     self.query
                 );
             }

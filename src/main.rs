@@ -8,10 +8,12 @@ mod data;
 mod stellar;
 mod output;
 mod server;
+mod config;
 
 use cli::{Args, LONG_ABOUT};
 use ledger::{LedgerRange, get_latest_ledger};
-use data::{Config, parse_xdr, query_balance};
+use config::Config;
+use data::{parse_xdr, query_balance, query_price};
 use data::s3::fetch_and_decompress;
 use data::rpc::fetch_from_rpc;
 use stellar::filters::{filter_by_address, filter_by_contract, filter_by_function};
@@ -48,6 +50,17 @@ async fn main() -> Result<()> {
         println!("Token: {} ({})", token_input, token_contract);
 
         let result = query_balance(address, token_contract)?;
+        println!("\n{}", serde_json::to_string_pretty(&result)?);
+        return Ok(());
+    }
+
+    // Handle price query separately (doesn't need ledger data)
+    if args.query == "price" {
+        let asset_input = args.asset.as_ref().unwrap();
+
+        println!("Querying price for asset: {}", asset_input);
+
+        let result = query_price(asset_input)?;
         println!("\n{}", serde_json::to_string_pretty(&result)?);
         return Ok(());
     }
