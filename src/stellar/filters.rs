@@ -299,7 +299,7 @@ pub fn filter_by_function(batch: &LedgerCloseMetaBatch, function_name: &str) -> 
 mod tests {
     use super::*;
     use stellar_xdr::curr::{
-        TransactionV0, TransactionV0Envelope, Memo, TimeBounds,
+        TransactionV0, TransactionV0Envelope, Memo,
         SequenceNumber, Uint256, CreateAccountOp, PaymentOp, Asset,
         VecM, AccountId, PublicKey, MuxedAccount
     };

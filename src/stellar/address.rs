@@ -1,4 +1,4 @@
-use stellar_xdr::curr::{MuxedAccount, AccountId, PublicKey, Uint256};
+use stellar_xdr::curr::{MuxedAccount, AccountId, PublicKey};
 
 /// Extract account ID as string from MuxedAccount
 pub fn muxed_account_to_string(muxed: &MuxedAccount) -> String {
@@ -24,7 +24,7 @@ pub fn account_id_to_string(account: &AccountId) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use stellar_xdr::curr::MuxedAccountMed25519;
+    use stellar_xdr::curr::{MuxedAccountMed25519, Uint256};
 
     // Helper function to create a test Uint256 from a known public key
     fn create_test_uint256() -> Uint256 {
