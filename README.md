@@ -488,6 +488,12 @@ cargo publish --dry-run
 cargo publish
 ```
 
+## AI Prompts
+
+The major prompts that I used with Claude Code and Codex can be found in the prompts/ directory which has been published with the code to provide some insight in to the assisted development process I use.
+
+Nb. the compounding bug was a stickler
+
 ## References
 
 - [Stellar Public Data Documentation](https://github.com/stellar/stellar-public-data)

@@ -20,8 +20,8 @@ Query Stellar blockchain data using RPC & Public data lake.
     stellar-data --query balance --address GG..123 --token xlm
     stellar-data --query price --asset btc
     stellar-data --query price --asset CB23WRD...
-    stellar-data --ledger 50000000 --query transactions
-    stellar-data --ledger 63864-63900 --query address --address GABC...
+    stellar-data --query transactions --ledger 50000000
+    stellar-data --query address --ledger 63864-63900 --address GABC...
     stellar-data --server --port 8080
     stellar-data --help (Provides more detailed options)
 

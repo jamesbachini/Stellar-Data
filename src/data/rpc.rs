@@ -256,23 +256,27 @@ pub fn query_balance(address: &str, token_contract: &str) -> Result<serde_json::
     {
         match ScVal::from_xdr_base64(result_xdr, Limits::none()) {
             Ok(ScVal::I128(parts)) => {
-                // Convert i128 parts to a readable balance
-                let balance = i128::from(parts.hi) << 64 | i128::from(parts.lo as u64);
+                // Convert i128 parts to get raw balance in stroops
+                let raw_balance = i128::from(parts.hi) << 64 | i128::from(parts.lo as u64);
+                // Convert to human-readable format (7 decimals for Stellar tokens)
+                let balance = raw_balance as f64 / 10_f64.powi(7);
                 return Ok(serde_json::json!({
                     "address": address,
                     "token": token_contract,
-                    "balance": balance.to_string(),
-                    "raw_balance": balance
+                    "balance": balance,
+                    "raw_balance": raw_balance.to_string()
                 }));
             }
             Ok(ScVal::U128(parts)) => {
-                // Convert u128 parts to a readable balance
-                let balance = u128::from(parts.hi) << 64 | u128::from(parts.lo);
+                // Convert u128 parts to get raw balance in stroops
+                let raw_balance = u128::from(parts.hi) << 64 | u128::from(parts.lo);
+                // Convert to human-readable format (7 decimals for Stellar tokens)
+                let balance = raw_balance as f64 / 10_f64.powi(7);
                 return Ok(serde_json::json!({
                     "address": address,
                     "token": token_contract,
-                    "balance": balance.to_string(),
-                    "raw_balance": balance
+                    "balance": balance,
+                    "raw_balance": raw_balance.to_string()
                 }));
             }
             Ok(val) => {
