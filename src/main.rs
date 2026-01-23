@@ -13,7 +13,7 @@ mod config;
 use cli::{Args, LONG_ABOUT};
 use ledger::{LedgerRange, get_latest_ledger};
 use config::Config;
-use data::{parse_xdr, query_balance, query_price};
+use data::{parse_xdr, query_balance, query_price, query_ttl};
 use data::s3::fetch_and_decompress;
 use data::rpc::fetch_from_rpc;
 use stellar::filters::{filter_by_address, filter_by_contract, filter_by_function};
@@ -46,11 +46,8 @@ async fn main() -> Result<()> {
         let token_contract = Config::resolve_token(token_input)
             .unwrap_or(token_input.as_str());
 
-        println!("Querying balance for address: {}", address);
-        println!("Token: {} ({})", token_input, token_contract);
-
         let result = query_balance(address, token_contract)?;
-        println!("\n{}", serde_json::to_string_pretty(&result)?);
+        println!("{}", serde_json::to_string_pretty(&result)?);
         return Ok(());
     }
 
@@ -58,10 +55,17 @@ async fn main() -> Result<()> {
     if args.query == "price" {
         let asset_input = args.asset.as_ref().unwrap();
 
-        println!("Querying price for asset: {}", asset_input);
-
         let result = query_price(asset_input)?;
-        println!("\n{}", serde_json::to_string_pretty(&result)?);
+        println!("{}", serde_json::to_string_pretty(&result)?);
+        return Ok(());
+    }
+
+    // Handle ttl query separately (doesn't need ledger data)
+    if args.query == "ttl" {
+        let contract_address = args.address.as_ref().unwrap();
+
+        let result = query_ttl(contract_address)?;
+        println!("{}", serde_json::to_string_pretty(&result)?);
         return Ok(());
     }
 
@@ -83,21 +87,6 @@ async fn main() -> Result<()> {
 
     let is_range = ledger_range.is_range();
     let silent = is_range; // Be silent during range queries to reduce output
-
-    if is_range {
-        println!("Querying ledger range: {} to {}", ledger_range.start, ledger_range.end);
-        println!("Query type: {}", args.query);
-        if let Some(ref addr) = args.address {
-            if args.query == "address" {
-                println!("Filtering by address: {}\n", addr);
-            } else if args.query == "contract" {
-                println!("Filtering by contract: {}\n", addr);
-            }
-        }
-        if let Some(ref name) = args.name {
-            println!("Filtering by function: {}\n", name);
-        }
-    }
 
     // Collect all matching transactions across the range
     let mut all_transactions = Vec::new();
@@ -144,27 +133,18 @@ async fn main() -> Result<()> {
             "address" => {
                 if let Some(ref address) = args.address {
                     let matching = filter_by_address(&batch, address);
-                    if !matching.is_empty() && !silent {
-                        println!("Found {} transaction(s) in ledger {}", matching.len(), ledger_seq);
-                    }
                     all_transactions.extend(matching);
                 }
             }
             "contract" => {
                 if let Some(ref contract) = args.address {
                     let matching = filter_by_contract(&batch, contract);
-                    if !matching.is_empty() && !silent {
-                        println!("Found {} transaction(s) in ledger {}", matching.len(), ledger_seq);
-                    }
                     all_transactions.extend(matching);
                 }
             }
             "function" => {
                 if let Some(ref function_name) = args.name {
                     let matching = filter_by_function(&batch, function_name);
-                    if !matching.is_empty() && !silent {
-                        println!("Found {} transaction(s) in ledger {}", matching.len(), ledger_seq);
-                    }
                     all_transactions.extend(matching);
                 }
             }
@@ -199,8 +179,6 @@ async fn main() -> Result<()> {
             "all" => {
                 // For "all" mode with ranges, collect all ledger metadata
                 if !is_range {
-                    println!("\nLedger batch: {} to {}", batch.start_sequence, batch.end_sequence);
-                    println!("Number of ledgers in batch: {}\n", batch.ledger_close_metas.len());
                     let json = to_json(&batch, &args.query, args.address.as_deref(), args.name.as_deref())?;
                     println!("{}", json);
                     return Ok(());
@@ -219,8 +197,6 @@ async fn main() -> Result<()> {
 
     // Output results for range queries
     if is_range {
-        println!("\nProcessed {} ledgers", total_processed);
-
         let result = if args.query == "all" {
             serde_json::json!({
                 "start_sequence": ledger_range.start,
@@ -240,7 +216,7 @@ async fn main() -> Result<()> {
             })
         };
 
-        println!("\n{}", serde_json::to_string_pretty(&result)?);
+        println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
         // Single ledger - use original output format
         let url = config.generate_url(ledger_range.start);
@@ -257,9 +233,6 @@ async fn main() -> Result<()> {
             }
         };
         let batch = parse_xdr(&decompressed_data)?;
-
-        println!("\nLedger batch: {} to {}", batch.start_sequence, batch.end_sequence);
-        println!("Number of ledgers in batch: {}\n", batch.ledger_close_metas.len());
 
         let json = to_json(&batch, &args.query, args.address.as_deref(), args.name.as_deref())?;
         println!("{}", json);

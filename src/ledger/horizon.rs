@@ -10,8 +10,6 @@ struct HorizonLedger {
 pub fn get_latest_ledger() -> Result<u32> {
     let horizon_url = "https://horizon.stellar.org/ledgers?order=desc&limit=1";
 
-    println!("Fetching latest ledger from Horizon...");
-
     let response = reqwest::blocking::get(horizon_url)
         .context("Failed to fetch latest ledger from Horizon")?;
 
@@ -26,8 +24,6 @@ pub fn get_latest_ledger() -> Result<u32> {
 
     let sequence = latest_ledger["sequence"].as_u64()
         .ok_or_else(|| anyhow::anyhow!("Could not parse ledger sequence"))?;
-
-    println!("Latest ledger: {}\n", sequence);
 
     Ok(sequence as u32)
 }

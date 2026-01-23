@@ -64,8 +64,8 @@ stellar-data --ledger <LEDGER_NUMBER | RANGE> --query <QUERY_TYPE> [--address <A
   - Single ledger: `--ledger 63864`
   - Ledger range: `--ledger 63864-63900`
   - Recent ledgers (negative): `--ledger -999` (queries last 999 blocks from current)
-- `--query, -q`: Query type - `all`, `transactions`, or `address` (default: `all`)
-- `--address, -a`: Stellar address to filter by (required when `--query address`)
+- `--query, -q`: Query type - `all`, `transactions`, `address`, or `ttl` (default: `all`)
+- `--address, -a`: Stellar address to filter by (required when `--query address` or `--query ttl`)
 
 ### Examples
 
@@ -172,6 +172,12 @@ Ledger range:
 Recent blocks with address filter:
 ```bash
 ./target/release/stellar-data --ledger -999 --query address --address GALPCCZN4YXA3YMJHKL6CVIECKPLJJCTVMSNYWBTKJW4K5HQLYLDMZTB
+```
+
+#### Get TTL for a contract (code + instance)
+
+```bash
+./target/release/stellar-data --query ttl --address C123...ABC
 ```
 
 The address filter searches for:

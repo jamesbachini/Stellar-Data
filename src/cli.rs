@@ -6,7 +6,7 @@ pub const LONG_ABOUT: &str = r#"                       /   \
 |-|          / | \    (/\|/\)   / | \         |-|
 | |---------/--|-voV---\>|</--Vov-|--\--------| |
 | |              '^'   (o o)  '^'             | |
-| |             STELLAR DATA v0.1.4           | |
+| |             STELLAR DATA v0.1.5           | |
 | |___________________________________________| |
 |-|   /   /\ /         ( (       \ /\   \     |-|
 (@)   | /   V           \ \       V   \ |     (@)
@@ -22,6 +22,7 @@ Query Stellar blockchain data using RPC & Public data lake.
     stellar-data --query price --asset CB23WRD...
     stellar-data --query transactions --ledger 50000000
     stellar-data --query address --ledger 63864-63900 --address GABC...
+    stellar-data --query ttl --address CABC...
     stellar-data --server --port 8080
     stellar-data --help (Provides more detailed options)
 
@@ -63,12 +64,13 @@ pub struct Args {
     ///   function     - Transactions calling a specific function (requires --name)
     ///   balance      - Token balance for an address (requires --address and --token)
     ///   price        - Oracle price for an asset (requires --asset)
+    ///   ttl          - Contract code + instance TTL (requires --address)
     #[arg(
         short,
         long,
         default_value = "all",
         value_name = "TYPE",
-        help = "Query type: 'all', 'transactions', 'address', 'contract', 'function', 'balance', or 'price'"
+        help = "Query type: 'all', 'transactions', 'address', 'contract', 'function', 'balance', 'price', or 'ttl'"
     )]
     pub query: String,
 
@@ -193,6 +195,12 @@ impl Args {
                 }
                 // price doesn't require ledger
             }
+            "ttl" => {
+                if self.address.is_none() {
+                    anyhow::bail!("--address is required when using --query ttl");
+                }
+                // ttl doesn't require ledger
+            }
             "all" | "transactions" => {
                 if self.ledger.is_none() {
                     anyhow::bail!("--ledger is required when using --query {}", self.query);
@@ -200,7 +208,7 @@ impl Args {
             }
             _ => {
                 anyhow::bail!(
-                    "Unsupported query type: {}. Use 'all', 'transactions', 'address', 'contract', 'function', 'balance', or 'price'",
+                    "Unsupported query type: {}. Use 'all', 'transactions', 'address', 'contract', 'function', 'balance', 'price', or 'ttl'",
                     self.query
                 );
             }

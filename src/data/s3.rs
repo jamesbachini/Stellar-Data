@@ -1,11 +1,7 @@
 use anyhow::{Context, Result};
 
 /// Download and decompress XDR data from S3
-pub fn fetch_and_decompress(url: &str, silent: bool) -> Result<Vec<u8>> {
-    if !silent {
-        println!("Fetching data from: {}", url);
-    }
-
+pub fn fetch_and_decompress(url: &str, _silent: bool) -> Result<Vec<u8>> {
     let response = reqwest::blocking::get(url)
         .context("Failed to download data from S3")?;
 
@@ -22,17 +18,9 @@ pub fn fetch_and_decompress(url: &str, silent: bool) -> Result<Vec<u8>> {
     let bytes = response.bytes()
         .context("Failed to read response bytes")?;
 
-    if !silent {
-        println!("Downloaded {} bytes (compressed)", bytes.len());
-    }
-
     // Decompress using zstd
     let decompressed = zstd::decode_all(&bytes[..])
         .context("Failed to decompress zstd data")?;
-
-    if !silent {
-        println!("Decompressed to {} bytes", decompressed.len());
-    }
 
     Ok(decompressed)
 }

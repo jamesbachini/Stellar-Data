@@ -52,11 +52,7 @@ struct RpcLedger {
 }
 
 /// Fetch ledger data from RPC when S3 doesn't have it yet
-pub fn fetch_from_rpc(ledger_seq: u32, silent: bool) -> Result<Vec<u8>> {
-    if !silent {
-        println!("Ledger not in S3, fetching from RPC archive...");
-    }
-
+pub fn fetch_from_rpc(ledger_seq: u32, _silent: bool) -> Result<Vec<u8>> {
     let client = reqwest::blocking::Client::new();
     let rpc_request = serde_json::json!({
         "jsonrpc": "2.0",
@@ -103,10 +99,6 @@ pub fn fetch_from_rpc(ledger_seq: u32, silent: bool) -> Result<Vec<u8>> {
         .and_then(|m| m.as_str())
         .ok_or_else(|| anyhow::anyhow!("No metadataXdr in RPC response"))?;
 
-    if !silent {
-        println!("Decoding base64 XDR from RPC...");
-    }
-
     // Decode base64 to get the XDR bytes for LedgerCloseMeta
     let ledger_close_meta = LedgerCloseMeta::from_xdr_base64(metadata_xdr, Limits::none())
         .context("Failed to decode metadataXdr from RPC")?;
@@ -122,10 +114,6 @@ pub fn fetch_from_rpc(ledger_seq: u32, silent: bool) -> Result<Vec<u8>> {
     // Serialize the batch to XDR bytes so it matches the S3 format
     let xdr_bytes = batch.to_xdr(Limits::none())
         .context("Failed to serialize batch to XDR")?;
-
-    if !silent {
-        println!("Fetched {} bytes from RPC", xdr_bytes.len());
-    }
 
     Ok(xdr_bytes)
 }
@@ -550,5 +538,220 @@ pub fn query_price(asset_input: &str) -> Result<serde_json::Value> {
         "asset_type": asset_type,
         "error": "No result XDR found in response",
         "result": result
+    }))
+}
+
+/// Query TTL (time to live) for a contract's code and instance entries
+///
+/// Uses the Soroban RPC getLedgerEntries method to fetch both the entry and its TTL.
+pub fn query_ttl(contract_address: &str) -> Result<serde_json::Value> {
+    use stellar_xdr::curr::*;
+
+    let client = reqwest::blocking::Client::new();
+
+    // Decode the contract address
+    let contract_bytes = match Strkey::from_string(contract_address) {
+        Ok(Strkey::Contract(contract)) => contract.0,
+        _ => anyhow::bail!("Invalid contract address format"),
+    };
+
+    let contract_sc_address = ScAddress::Contract(ContractId(Hash(contract_bytes)));
+
+    // Helper to parse u32 from JSON (number or string)
+    fn parse_u32(value: &serde_json::Value) -> Option<u32> {
+        if let Some(num) = value.as_u64() {
+            return u32::try_from(num).ok();
+        }
+        if let Some(text) = value.as_str() {
+            return text.parse::<u32>().ok();
+        }
+        None
+    }
+
+    // Fetch entry and TTL info for a ledger key
+    fn fetch_entry_with_ttl(
+        client: &reqwest::blocking::Client,
+        ledger_key: LedgerKey,
+    ) -> Result<(serde_json::Value, Option<u32>, Option<Hash>, Option<String>)> {
+        let key_xdr = ledger_key.to_xdr_base64(Limits::none())
+            .context("Failed to encode ledger key to XDR")?;
+
+        let rpc_request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getLedgerEntries",
+            "params": {
+                "keys": [key_xdr]
+            }
+        });
+
+        let response = client
+            .post(Config::soroban_rpc_url())
+            .json(&rpc_request)
+            .send()
+            .context("Failed to call RPC for ttl query")?;
+
+        if !response.status().is_success() {
+            anyhow::bail!("RPC returned error status: {}", response.status());
+        }
+
+        let json: serde_json::Value = response.json()
+            .context("Failed to parse RPC response")?;
+
+        if let Some(error) = json.get("error") {
+            anyhow::bail!("RPC error: {}", error);
+        }
+
+        let result = json.get("result")
+            .ok_or_else(|| anyhow::anyhow!("No result in RPC response"))?;
+
+        let latest_ledger = result.get("latestLedger")
+            .and_then(parse_u32)
+            .or_else(|| result.get("latestLedgerSeq").and_then(parse_u32));
+
+        let mut last_modified: Option<u32> = None;
+        let mut live_until: Option<u32> = None;
+        let mut found = false;
+        let mut wasm_hash: Option<Hash> = None;
+        let mut executable_type: Option<String> = None;
+
+        if let Some(entries) = result.get("entries").and_then(|e| e.as_array()) {
+            for entry in entries {
+                if let Some(last) = entry.get("lastModifiedLedgerSeq").and_then(parse_u32) {
+                    last_modified = Some(last);
+                    found = true;
+                }
+
+                if let Some(live) = entry.get("liveUntilLedgerSeq").and_then(parse_u32) {
+                    live_until = Some(live);
+                }
+
+                if let Some(xdr) = entry.get("xdr").and_then(|x| x.as_str()) {
+                    if let Ok(entry_data) = LedgerEntryData::from_xdr_base64(xdr, Limits::none()) {
+                        match entry_data {
+                            LedgerEntryData::ContractData(data_entry) => {
+                                found = true;
+
+                                if let ScVal::ContractInstance(instance) = data_entry.val {
+                                    match instance.executable {
+                                        ContractExecutable::Wasm(hash) => {
+                                            wasm_hash = Some(hash);
+                                            executable_type = Some("Wasm".to_string());
+                                        }
+                                        ContractExecutable::StellarAsset => {
+                                            executable_type = Some("StellarAsset".to_string());
+                                        }
+                                    }
+                                }
+                            }
+                            LedgerEntryData::ContractCode(_) => {
+                                found = true;
+                            }
+                            _ => {}
+                        }
+                    } else if let Ok(ledger_entry) =
+                        LedgerEntry::from_xdr_base64(xdr, Limits::none())
+                    {
+                        last_modified = Some(ledger_entry.last_modified_ledger_seq);
+                        match ledger_entry.data {
+                            LedgerEntryData::ContractData(data_entry) => {
+                                found = true;
+
+                                if let ScVal::ContractInstance(instance) = data_entry.val {
+                                    match instance.executable {
+                                        ContractExecutable::Wasm(hash) => {
+                                            wasm_hash = Some(hash);
+                                            executable_type = Some("Wasm".to_string());
+                                        }
+                                        ContractExecutable::StellarAsset => {
+                                            executable_type = Some("StellarAsset".to_string());
+                                        }
+                                    }
+                                }
+                            }
+                            LedgerEntryData::ContractCode(_) => {
+                                found = true;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+
+        let ttl_remaining = match (live_until, latest_ledger) {
+            (Some(live), Some(current)) => Some(live.saturating_sub(current)),
+            _ => None,
+        };
+        // Stellar averages ~5 seconds per ledger; use for a rough time estimate.
+        let ttl_remaining_seconds = ttl_remaining.map(|remaining| remaining as u64 * 5);
+        let ttl_remaining_days = ttl_remaining_seconds.map(|seconds| {
+            let days = seconds as f64 / 86_400.0;
+            (days * 100.0).round() / 100.0
+        });
+
+        Ok((
+            serde_json::json!({
+                "exists": found,
+                "last_modified_ledger": last_modified,
+                "live_until_ledger": live_until,
+                "ttl_remaining_ledgers": ttl_remaining,
+                "ttl_remaining_days": ttl_remaining_days,
+                "ttl_estimate_seconds_per_ledger": 5,
+                "contract_executable": executable_type.as_ref(),
+                "contract_executable_wasm_hash": wasm_hash.as_ref().map(|h| h.to_string())
+            }),
+            latest_ledger,
+            wasm_hash,
+            executable_type,
+        ))
+    }
+
+    // Contract instance entry (stored in contract data)
+    let instance_key = LedgerKey::ContractData(LedgerKeyContractData {
+        contract: contract_sc_address.clone(),
+        key: ScVal::LedgerKeyContractInstance,
+        durability: ContractDataDurability::Persistent,
+    });
+
+    let (instance_info, instance_latest, wasm_hash, executable_type) =
+        fetch_entry_with_ttl(&client, instance_key)?;
+
+    let (code_info, code_latest) = if let Some(hash) = wasm_hash {
+        let code_hash = hash.clone();
+        let code_key = LedgerKey::ContractCode(LedgerKeyContractCode { hash });
+        let (info, latest, _, _) = fetch_entry_with_ttl(&client, code_key)?;
+        (
+            serde_json::json!({
+                "code_hash": code_hash.to_string(),
+                "ttl": info
+            }),
+            latest,
+        )
+    } else if executable_type.as_deref() == Some("StellarAsset") {
+        (
+            serde_json::json!({
+                "exists": false,
+                "error": "Contract executable is StellarAsset; no WASM code entry"
+            }),
+            None,
+        )
+    } else {
+        (
+            serde_json::json!({
+                "exists": false,
+                "error": "Contract instance did not provide a WASM code hash"
+            }),
+            None,
+        )
+    };
+
+    let latest_ledger = instance_latest.or(code_latest);
+
+    Ok(serde_json::json!({
+        "contract": contract_address,
+        "latest_ledger": latest_ledger,
+        "contract_instance": instance_info,
+        "contract_code": code_info
     }))
 }
